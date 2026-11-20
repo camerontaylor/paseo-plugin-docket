@@ -750,3 +750,48 @@ describe("review findings, third round", () => {
     expect(refusal(r).code).toBe("missing-items");
   });
 });
+
+describe("review findings, fourth round: a delete never touches what it did not choose", () => {
+  it("leaves a later queued skip delivery alone when the answered part was delivered", () => {
+    let r = draft(make(AB), "r.a", { verdict: "approve" });
+    r = setDelivered(send1(r, ["r.a"]));
+    r = send1(r, [], { skip: ["r.b"] });
+    const after = run(r, { kind: "deleteDecisions", questions: ["r"], now: T1 });
+    expect(after.deliveries[1].state).toBe("queued");
+    expect(after.deliveries[1].text).not.toBe("");
+    expect(after.deliveries[1].text).toBe(r.deliveries[1].text);
+  });
+
+  it("refuses to cancel a held delivery that also carries a comment", () => {
+    let r = make(PLAN_REVIEW);
+    r = run(r, { kind: "setComment", on: "plan.s2", text: "keep-this-comment", baseVersion: 0, now: T0 });
+    r = draft(r, "steps.s1", { verdict: "do" });
+    r = run(r, { kind: "send", targets: [{ target: "steps.s1", version: 1 }], comments: [{ on: "plan.s2", version: 1 }], now: T1 });
+    r = run(r, { kind: "holdOnArchive", now: T1 });
+    expect(r.deliveries[0].state).toBe("held");
+    expect(refusal(applyCommand(r, { kind: "deleteDecisions", questions: ["steps"], now: T1 })).code).toBe("delivery-pending");
+    const all = run(r, { kind: "deleteDecisions", now: T1 });
+    expect(all.deliveries[0].text).toContain("keep-this-comment");
+    expect(all.deliveries[0].state).toBe("held");
+  });
+});
+
+describe("review findings, fourth round: siblings", () => {
+  it("refuses a held delivery shared with another question unless both go; delete-all cancels it", () => {
+    let r = draft(draft(make(AB), "q", { value: "one" }), "r.a", { verdict: "approve" });
+    r = run(send1(r, ["q", "r.a"]), { kind: "holdOnArchive", now: T1 });
+    expect(refusal(applyCommand(r, { kind: "deleteDecisions", questions: ["q"], now: T1 })).code).toBe("delivery-pending");
+    expect(r.deliveries[0].text).not.toBe("");
+    const all = run(r, { kind: "deleteDecisions", now: T1 });
+    expect(all.deliveries[0]).toMatchObject({ state: "removed", text: "" });
+  });
+
+  it("leaves another question's pending delivery untouched", () => {
+    let r = draft(make(AB), "q", { value: "one" });
+    r = setDelivered(send1(r, ["q"]));
+    r = draft(r, "r.a", { verdict: "approve" });
+    r = send1(r, ["r.a"]);
+    const after = run(r, { kind: "deleteDecisions", questions: ["q"], now: T1 });
+    expect(after.deliveries[1]).toEqual(r.deliveries[1]);
+  });
+});

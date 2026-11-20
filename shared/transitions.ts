@@ -962,22 +962,27 @@ function deleteDecisions(record: SurfaceRecord, cmd: DeleteDecisions): Result {
     const ns = q.items ? (cand[id] ?? []).map((i) => q.items?.[i].delivery) : [q.delivery];
     return ns.filter((n): n is number => n !== undefined);
   };
-  // A delivery still in the daemon's queue (queued, uncertain) cannot be recalled; a held, failed or
-  // removed one can be cancelled, but only when the user deletes every answer it carries.
-  const blocked = (id: string): boolean =>
-    carries(id).some((n) => {
+  // What this delete removes, by target: `question` or `question.item`.
+  const doomed = (): Set<string> => {
+    const out = new Set<string>();
+    for (const id of Object.keys(cand)) {
+      if (record.questions[id].items) for (const i of cand[id]) out.add(`${id}.${i}`);
+      else out.add(id);
+    }
+    return out;
+  };
+  // The rule: a delivery still in the daemon's queue (queued, uncertain) cannot be recalled, so it
+  // refuses; a held, failed or removed one is cancelled only when everything it carries is being
+  // deleted (no comment, no skipped target, no other answer). Otherwise the delete is refused.
+  const blocked = (id: string): boolean => {
+    const dead = doomed();
+    return carries(id).some((n) => {
       const d = findDelivery(record, n);
       if (!d || d.state === "delivered" || d.text === "") return false;
       if (d.state === "queued" || d.state === "uncertain") return true;
-      return d.targets.some((t) => {
-        const p = parseTarget(t) as ParsedTarget;
-        const q = own(record.questions, p.question);
-        if (!q || q.deleted) return false;
-        const mine = own(cand, p.question);
-        if (!mine) return q.items ? p.item !== undefined && q.items[p.item]?.answer?.skipped !== true && q.items[p.item]?.answer !== undefined : q.answer?.skipped !== true && q.answer !== undefined;
-        return p.item !== undefined && mine.indexOf(p.item) < 0 && q.items?.[p.item]?.answer !== undefined && q.items[p.item].answer?.skipped !== true;
-      });
+      return d.comments.length > 0 || d.targets.some((t) => !dead.has(t));
     });
+  };
   for (let again = true; again; ) {
     again = false;
     for (const id of Object.keys(cand)) {
@@ -1012,13 +1017,10 @@ function deleteDecisions(record: SurfaceRecord, cmd: DeleteDecisions): Result {
   }
   // A delivery's text is a copy of every answer it carried: it goes when any of them is deleted.
   // One that was never delivered is cancelled with it (state removed), so Retry cannot resend nothing.
+  const dead = doomed();
   const deliveries = record.deliveries.map((d) => {
     if (d.text === "") return d;
-    const touched = d.targets.some((t) => {
-      const p = parseTarget(t) as ParsedTarget;
-      const q = own(questions, p.question);
-      return q !== undefined && (q.deleted === true || (p.item !== undefined && own(q.items ?? {}, p.item)?.deleted === true));
-    });
+    const touched = d.targets.some((t) => dead.has(t));
     if (!touched) return d;
     const next: Delivery = { ...d, text: "" };
     delete next.receivedText;
