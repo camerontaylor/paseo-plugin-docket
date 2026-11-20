@@ -4,7 +4,9 @@ Docket lets an agent show you a surface: a display wrapped around a typed set of
 
 ## Permissions
 
-Docket answers the permission prompts of its own tools (`docket_show`, `docket_close`, `docket_get`, `docket_reference`, and the placeholder `docket_noop`) with allow, and no others. Every other permission request is left pending for you or another plugin. The setting "Answer the permission prompts for the plugin's own tools" turns this off.
+Today Docket answers no permission prompts at all: it has no permission handler and no setting for one. The placeholder `docket_noop` tool will prompt like any other tool in a mode that asks.
+
+Policy, to be implemented in slice S4: Docket will answer the permission prompts of its own tools (`docket_show`, `docket_close`, `docket_get`, `docket_reference`) with allow, and no others. Every other permission request will be left pending for you or another plugin. A setting, "Answer the permission prompts for the plugin's own tools", will turn this off.
 
 ## What it writes and where
 
