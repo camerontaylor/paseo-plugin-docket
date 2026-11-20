@@ -94,6 +94,12 @@ export const INVALID_CASES: InvalidCase[] = [
   { rule: "recommend", name: "review item verdict unknown", mutate: (d) => { d.questions[1].recommend = { s1: "nah" }; }, pointer: "/questions/1/recommend/s1", includes: "not one of this question's verdicts" },
   { rule: "recommend", name: "review default verdicts apply", mutate: (d) => { delete d.questions[1].verdicts; }, pointer: "/questions/1/recommend", includes: "\"approve\", \"change\"" },
 
+  { rule: "recommend", name: "multi recommend below min", mutate: (d) => { Object.assign(d.questions[0], { multi: true, min: 2, recommend: ["pg_boss"] }); }, pointer: "/questions/0/recommend", includes: "at least 2" },
+  { rule: "recommend", name: "multi recommend above max", mutate: (d) => { Object.assign(d.questions[0], { multi: true, max: 1, recommend: ["pg_boss", "bullmq"] }); }, pointer: "/questions/0/recommend", includes: "at most 1" },
+  { rule: "recommend", name: "multi recommend repeats an option", mutate: (d) => { Object.assign(d.questions[0], { multi: true, recommend: ["pg_boss", "pg_boss"] }); }, pointer: "/questions/0/recommend/1", includes: "repeats" },
+  { rule: "choice options", name: "min above the options, other false", mutate: (d) => { Object.assign(d.questions[0], { multi: true, other: false, min: 3 }); delete d.questions[0].recommend; }, pointer: "/questions/0/min", includes: "only 2 options" },
+  { rule: "limit", name: "plan steps nested four deep", mutate: (d) => { d.view[0].steps = [{ id: "a", title: "A", children: [{ id: "b", title: "B", children: [{ id: "c", title: "C", children: [{ id: "d", title: "D" }] }] }] }]; d.questions[1].recommend = "do"; }, pointer: "/view/0/steps/0/children/0/children/0/children", includes: "nested at most 3 deep" },
+
   // The surface has questions and no `context`.
   { rule: "context", name: "questions without context", mutate: (d) => { delete d.context; }, pointer: "/context", includes: "required when there are questions" },
   { rule: "context", name: "blank context", mutate: (d) => { d.context = "  "; }, pointer: "/context", includes: "is required when there are questions" },

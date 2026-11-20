@@ -309,3 +309,35 @@ describe("ids and limits (27.1)", () => {
     expect(a.v).toBe(1);
   });
 });
+
+describe("selection bounds and nesting depth", () => {
+  it("three levels of steps are fine", () => {
+    const doc = base();
+    doc.view[0].steps = [{ id: "a", title: "A", children: [{ id: "b", title: "B", children: [{ id: "c", title: "C" }] }] }];
+    expect(validateDocument(doc).problems).toEqual([]);
+  });
+  it("deep nesting returns one depth problem, not one per level", () => {
+    let step: Doc = { id: "z", title: "Z" };
+    for (let i = 0; i < 50; i++) step = { id: "n" + i, title: "N", children: [step] };
+    const doc = base();
+    doc.view[0].steps = [step];
+    const r = validateDocument(doc);
+    expect(r.ok).toBe(false);
+    expect(r.problems.filter((p) => p.message.includes("nested at most 3 deep"))).toHaveLength(1);
+  });
+  it("absurdly deep or circular input is a problem, not a crash", () => {
+    let step: Doc = { id: "z", title: "Z" };
+    for (let i = 0; i < 50000; i++) step = { id: "n", title: "N", children: [step] };
+    const doc = base();
+    doc.view[0].steps = [step];
+    expect(validateDocument(doc).ok).toBe(false);
+    const loop: Doc = base();
+    loop.self = loop;
+    expect(validateDocument(loop).ok).toBe(false);
+  });
+  it("a recommendation exactly at the bounds is fine", () => {
+    const doc = base();
+    Object.assign(doc.questions[0], { multi: true, min: 2, max: 2, recommend: ["pg_boss", "bullmq"] });
+    expect(validateDocument(doc).problems).toEqual([]);
+  });
+});

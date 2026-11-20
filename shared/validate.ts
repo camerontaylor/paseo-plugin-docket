@@ -184,7 +184,11 @@ function checkPathList(c: Collector, at: string, value: unknown, name: string): 
 
 // --- view -------------------------------------------------------------------
 
-function validatePlanSteps(c: Collector, at: string, steps: unknown, ids: string[], afterRefs: [string, string][]): void {
+function validatePlanSteps(c: Collector, at: string, steps: unknown, ids: string[], afterRefs: [string, string][], depth = 1): void {
+  if (depth > LIMITS.blockDepth) {
+    c.problem(at, `steps are nested at most ${LIMITS.blockDepth} deep`);
+    return;
+  }
   if (!Array.isArray(steps)) {
     c.problem(at, "`steps` must be a list of steps");
     return;
@@ -216,7 +220,7 @@ function validatePlanSteps(c: Collector, at: string, steps: unknown, ids: string
         if (typeof step.id === "string" && step.after.includes(step.id)) c.problem(p + "/after", "a step cannot come after itself");
       }
     }
-    if (step.children !== undefined) validatePlanSteps(c, p + "/children", step.children, ids, afterRefs);
+    if (step.children !== undefined) validatePlanSteps(c, p + "/children", step.children, ids, afterRefs, depth + 1);
   });
 }
 
@@ -395,6 +399,9 @@ function validateChoice(c: Collector, at: string, q: Obj): void {
     else if (!multi) c.problem(at + "/" + key, `\`${key}\` applies only with \`multi\``);
   }
   if (typeof q.min === "number" && typeof q.max === "number" && q.min > q.max) c.problem(at + "/max", "`max` is below `min`");
+  if (multi && q.other === false && typeof q.min === "number" && q.min > ids.length) {
+    c.problem(at + "/min", `\`min\` is ${q.min} but there are only ${ids.length} options and \`other\` is false`);
+  }
   if (q.recommend === undefined) return;
   const rec = q.recommend;
   const check = (value: unknown, p: string): void => {
@@ -404,7 +411,14 @@ function validateChoice(c: Collector, at: string, q: Obj): void {
   };
   if (multi) {
     if (!Array.isArray(rec)) c.problem(at + "/recommend", "with `multi`, `recommend` is a list of option ids");
-    else rec.forEach((r, i) => check(r, at + "/recommend" + pointerToken(i)));
+    else {
+      rec.forEach((r, i) => {
+        check(r, at + "/recommend" + pointerToken(i));
+        if (typeof r === "string" && rec.indexOf(r) < i) c.problem(at + "/recommend" + pointerToken(i), `\`recommend\` repeats ${JSON.stringify(r)}`);
+      });
+      if (typeof q.min === "number" && rec.length < q.min) c.problem(at + "/recommend", `\`recommend\` lists ${rec.length}, but \`min\` requires at least ${q.min}`);
+      if (typeof q.max === "number" && rec.length > q.max) c.problem(at + "/recommend", `\`recommend\` lists ${rec.length}, but \`max\` allows at most ${q.max}`);
+    }
   } else if (Array.isArray(rec)) c.problem(at + "/recommend", "`recommend` is a single option id unless `multi` is true");
   else check(rec, at + "/recommend");
 }
@@ -552,7 +566,13 @@ export function validateDocument(value: unknown, options: ValidateOptions = {}):
     c.problem("", "the document must be a JSON object");
     return finish();
   }
-  const bytes = options.sourceBytes ?? utf8Bytes(JSON.stringify(value));
+  let bytes: number;
+  try {
+    bytes = options.sourceBytes ?? utf8Bytes(JSON.stringify(value));
+  } catch {
+    c.problem("", "the document cannot be measured: it is nested too deeply or refers to itself");
+    return finish();
+  }
   if (bytes > LIMITS.documentBytes) {
     c.problem("", `the document is ${bytes} bytes; the limit is ${LIMITS.documentBytes} bytes (256 KiB)`);
     return finish();
