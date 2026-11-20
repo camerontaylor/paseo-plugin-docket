@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deliveryAction, type AgentDeliveryState, type DeliveryTransport, type QueueItemState } from "./delivery";
+import { deliveryAction, type AgentDeliveryState, type DeliveryAction, type DeliveryObservation, type DeliveryTransport, type QueueItemState } from "./delivery";
 import type { Delivery, DeliveryState } from "./record";
 
 const delivery: Delivery = {
@@ -37,3 +37,29 @@ describe("delivery decision table", () => {
     ]);
   });
 });
+
+it.each([
+  ["new queue entry", {}, {}, "enqueue"],
+  ["accepted entry gone", { enqueued: true }, {}, "remove"],
+  ["gone with timeline confirmation", { enqueued: true }, { inTimeline: true }, "deliver"],
+  ["uncertain blocker with confirmation", {}, { item: "uncertain", inTimeline: true }, "deliverAndRemove"],
+  ["uncertain blocker without confirmation", {}, { item: "uncertain" }, "uncertain"],
+  ["failed queue item", {}, { item: "failed" }, "failQueue"],
+  ["explicit Retry of failed item", { queueRetryRevision: 1 }, { item: "failed" }, "retryQueue"],
+  ["archive supersedes enqueue", {}, { agent: "archived" }, "hold"],
+  ["restore still holds", { state: "held", enqueued: false }, {}, "wait"],
+  ["held item still retained", { state: "held", enqueued: true }, { item: "pending" }, "removeHeld"],
+  ["busy stock agent", {}, { transport: "direct", agent: "busy" }, "wait"],
+  ["missing stock agent", {}, { transport: "direct", agent: "missing" }, "failMissing"],
+  ["ready stock agent", {}, { transport: "direct" }, "send"],
+  ["direct ack before timeout", { sent: true }, { transport: "direct" }, "wait"],
+  ["direct ack after timeout", { sent: true }, { transport: "direct", confirmationExpired: true }, "uncertain"],
+  ["timeline proof supersedes timeout", { sent: true }, { transport: "direct", confirmationExpired: true, inTimeline: true }, "deliver"],
+] satisfies [string, Partial<Delivery>, Partial<Omit<DeliveryObservation, "delivery">>, DeliveryAction][])(
+  "%s", (_label, patch, observation, action) => {
+    expect(deliveryAction({
+      agent: "ready", item: "absent", transport: "queue", inTimeline: false,
+      retryDue: true, ...observation, delivery: { ...delivery, ...patch },
+    })).toBe(action);
+  },
+);

@@ -71,6 +71,7 @@ export type RefusalCode =
   | "unknown-delivery"
   | "bad-delivery-transition"
   | "agent-archived" // Retry while the agent is archived
+  | "queue-unavailable" // Retry needs the durable queue API
   | "delivery-pending" // a decision whose delivery is still in the queue
   | "comment-history-unavailable" // Redaction would discard the only copy of a sent comment
   | "delivery-redacted" // Retry of a delivery whose text the user deleted
@@ -1018,7 +1019,8 @@ function deleteDecisions(record: SurfaceRecord, cmd: DeleteDecisions): Result {
         if (d.comments.some((on) => !sentComment(d, on))) return "comment-history-unavailable";
         continue;
       }
-      if (d.state === "queued" || d.state === "uncertain" || (d.state === "held" && (d.enqueued || (d.transport === "queue" && d.enqueued === undefined)))
+      if (d.state === "queued" || d.state === "uncertain" || d.enqueued
+        || (d.state === "held" && d.transport === "queue" && d.enqueued === undefined)
         || d.comments.length > 0 || d.targets.some((t) => !dead.has(t))) return "delivery-pending";
     }
     return undefined;

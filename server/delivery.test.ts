@@ -311,3 +311,56 @@ describe("direct transport", () => {
     expect(store.get(d.surface)?.deliveries[0]).toMatchObject({ state: "delivered", messageId: found ? d.messageId : d.messageId + ":g1" });
   });
 });
+
+it("protects a failed delivery from deletion until the composer removes its item", async () => {
+  const d = await createDelivery();
+  const host = fakePaseo();
+  const delivery = start(host);
+  await delivery.check(agentId);
+  host.items.get(d.messageId)!.deliveryState = "failed";
+  await delivery.check(agentId);
+
+  expect(await store.deleteDecision(d.surface, "choice"))
+    .toMatchObject({ ok: false, refusal: { code: "delivery-pending" } });
+  expect(store.get(d.surface)?.deliveries[0]).toMatchObject({ state: "failed", text: d.text });
+  expect(host.items.get(d.messageId)?.text).toBe(d.text);
+
+  await host.queue.remove(d.messageId, (await host.queue.list()).revision);
+  await delivery.check(agentId);
+  expect(await store.deleteDecision(d.surface, "choice")).toMatchObject({ ok: true });
+  host.drain(d.messageId);
+  expect(host.messages.size).toBe(0);
+});
+
+it("refuses Retry when a persisted queue delivery has no queue handle", async () => {
+  const d = await createDelivery();
+  const host = fakePaseo();
+  const delivery = start(host);
+  await delivery.check(agentId);
+  host.items.get(d.messageId)!.deliveryState = "failed";
+  await delivery.check(agentId);
+  await delivery.stop();
+
+  const stock = fakePaseo(false);
+  worker = startDelivery(store, stock.paseo, { now, onError: () => {} });
+  expect(await worker.retry(d.surface, 1)).toMatchObject({ ok: false, refusal: { code: "queue-unavailable" } });
+  expect(store.get(d.surface)?.deliveries[0]).toMatchObject({ state: "failed", enqueued: true });
+  expect(stock.send).not.toHaveBeenCalled();
+});
+
+it("offers explicit same-ID Retry when a direct acknowledgement has no timeline entry", async () => {
+  const d = await createDelivery();
+  const host = fakePaseo(false);
+  host.send.mockResolvedValue(undefined);
+  const delivery = start(host);
+  await delivery.check(agentId);
+  clock += 60_000;
+  await delivery.check(agentId);
+  await delivery.check(agentId);
+  expect(store.get(d.surface)?.deliveries[0]).toMatchObject({ state: "uncertain", sent: true });
+  expect(host.send).toHaveBeenCalledTimes(1);
+
+  expect(await delivery.retry(d.surface, 1)).toMatchObject({ ok: true });
+  await delivery.check(agentId);
+  expect(host.send.mock.calls).toEqual(Array(2).fill([d.text, { messageId: d.messageId, activeTurnBehavior: "steer" }]));
+});

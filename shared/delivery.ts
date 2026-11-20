@@ -14,12 +14,13 @@ export interface DeliveryObservation {
   item: QueueItemState;
   inTimeline: boolean;
   retryDue: boolean;
+  confirmationExpired?: boolean;
 }
 
 // First matching row wins. Busy includes a pending permission; queue admission
 // is owned by the daemon. "Absent" means a successful queue read found no item.
 export function deliveryAction({
-  delivery: d, transport, agent, item, inTimeline, retryDue,
+  delivery: d, transport, agent, item, inTimeline, retryDue, confirmationExpired,
 }: DeliveryObservation): DeliveryAction {
   const queue = transport === "queue";
   if (d.text === "") return "wait";
@@ -37,6 +38,7 @@ export function deliveryAction({
   if (agent === "missing") return "failMissing";
   if (agent === "archived") return "hold";
   if (!queue) {
+    if (d.state === "queued" && d.sent && confirmationExpired) return "uncertain";
     return d.state === "queued" && !d.sent && agent === "ready" && retryDue ? "send" : "wait";
   }
   if (item === "uncertain" || item === "failed") {

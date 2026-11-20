@@ -7,6 +7,8 @@ import type { Store } from "./store";
 const OUTCOME_UNKNOWN = "agent_request_outcome_unknown";
 const DIRECT_ATTEMPTS = 5;
 const POLL_MS = 30_000;
+const DIRECT_CONFIRMATION_MS = 60_000;
+const TIMELINE_UNCONFIRMED = "timeline_unconfirmed";
 
 interface DeliveryOptions {
   forceDirect?: boolean;
@@ -94,7 +96,7 @@ export function startDelivery(store: Store, paseo: PaseoApi, options: DeliveryOp
   async function reconcileDelivery(record: SurfaceRecord, d: Delivery, agent: DeliveryAgent, state: AgentDeliveryState) {
     if (!d.text || d.state === "removed" || (d.state === "failed" && !d.enqueued)) return;
     if (state === "missing") {
-      if (d.state === "queued" || d.state === "uncertain") await update(record, d, "failed", { lastError: "agent_not_found", enqueued: false, queueRetryRevision: null });
+      if (d.state === "queued" || d.state === "uncertain") await update(record, d, "failed", { lastError: "agent_not_found", queueRetryRevision: null });
       return;
     }
 
@@ -113,7 +115,11 @@ export function startDelivery(store: Store, paseo: PaseoApi, options: DeliveryOp
 
     const at = d.attempts > 0 && d.updatedAt ? Date.parse(d.updatedAt) + backoff(d.attempts) : 0;
     const retryDue = now().getTime() >= at;
-    const action = deliveryAction({ delivery: d, transport, agent: state, item: item?.deliveryState ?? "absent", inTimeline: received !== undefined, retryDue });
+    const confirmationAt = Date.parse(d.updatedAt ?? d.createdAt) + DIRECT_CONFIRMATION_MS;
+    const action = deliveryAction({
+      delivery: d, transport, agent: state, item: item?.deliveryState ?? "absent",
+      inTimeline: received !== undefined, retryDue, confirmationExpired: now().getTime() >= confirmationAt,
+    });
     switch (action) {
       case "deliver":
       case "deliverAndRemove": {
@@ -131,8 +137,15 @@ export function startDelivery(store: Store, paseo: PaseoApi, options: DeliveryOp
         if (await removeItem(agent, d.messageId, snapshot!, false)) await update(record, d, undefined, { enqueued: false });
         return;
       case "uncertain":
+        if (transport === "direct") {
+          await update(record, d, "uncertain", { lastError: TIMELINE_UNCONFIRMED });
+          return;
+        }
+        // The daemon still owns the uncertain queue item.
+        await update(record, d, "uncertain", { transport, enqueued: true, queueRetryRevision: null });
+        return;
       case "failQueue":
-        await update(record, d, action === "uncertain" ? "uncertain" : "failed", { transport, enqueued: true, queueRetryRevision: null });
+        await update(record, d, "failed", { transport, enqueued: true, queueRetryRevision: null });
         return;
       case "remove":
         await update(record, d, "removed", { enqueued: false, queueRetryRevision: null });
@@ -160,6 +173,9 @@ export function startDelivery(store: Store, paseo: PaseoApi, options: DeliveryOp
       case "wait":
         if (item && !d.enqueued) await update(record, d, undefined, { transport, enqueued: true, queueRetryRevision: null });
         if (d.state === "delivered" && d.enqueued) await update(record, d, undefined, { enqueued: false });
+        if (transport === "direct" && d.state === "queued" && d.sent && Number.isFinite(confirmationAt)) {
+          checkLater(record.agentId, confirmationAt);
+        }
         if (!retryDue && d.state === "queued" && !d.enqueued && !d.sent) checkLater(record.agentId, at);
         return;
       case "failMissing":
@@ -281,20 +297,30 @@ export function startDelivery(store: Store, paseo: PaseoApi, options: DeliveryOp
         const d = store.get(surfaceId)?.deliveries.find((entry) => entry.n === n);
         let queueRetryRevision: number | undefined;
         let messageId: string | undefined;
-        if (d?.text && (d.state === "uncertain" || d.state === "failed" || d.state === "held")) {
+        if (d?.text && (d.state === "uncertain" || d.state === "failed" || d.state === "held" || d.state === "removed")) {
           const transport = await transportFor(agent, d);
           if (transport === "queue" && (d.enqueued || d.transport === "queue")) {
-            const snapshot = await queueOf(agent)!.list();
+            const queue = queueOf(agent);
+            const unavailable = () => ({
+              ok: false as const,
+              refusal: { code: "queue-unavailable" as const, message: "Retry requires the host's durable agent queue" },
+            });
+            if (!queue) return unavailable();
+            const snapshot = await queue.list().catch((error: unknown) => {
+              if (hasErrorCode(error, "AGENT_QUEUE_UNSUPPORTED")) return null;
+              throw error;
+            });
+            if (!snapshot) return unavailable();
             const item = snapshot.items.find((entry) => entry.id === d.messageId);
-            if (item && d.state === "held") {
-              throw new Error("Archived delivery is still being removed from the agent queue");
+            if (item && (d.state === "held" || d.state === "removed")) {
+              throw new Error("The old delivery is still in the agent queue");
             }
             if (item) queueRetryRevision = snapshot.revision;
-          } else if (transport === "direct" && d.lastError === OUTCOME_UNKNOWN) {
+          } else if (transport === "direct" && (d.lastError === OUTCOME_UNKNOWN || d.sent)) {
             const receivedText = await timelineText(agent, d.messageId);
             if (receivedText !== undefined) {
               await update(record, d, "delivered", { receivedText, lastError: null });
-            } else {
+            } else if (d.lastError === OUTCOME_UNKNOWN) {
               messageId = nextMessageId(d.messageId);
             }
           }
