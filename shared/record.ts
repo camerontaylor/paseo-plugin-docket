@@ -2,6 +2,7 @@
 // the delivery states of plan D3). Plain data: every change to it is a pure
 // function in `transitions.ts`, and the file store only reads and writes it.
 
+import type { DeliveryTransport } from "./delivery";
 import type { Meanwhile, SurfaceDocument } from "./document";
 
 export const RECORD_SCHEMA = 1;
@@ -116,8 +117,14 @@ export interface Delivery {
   comments: string[];
   /** Frozen comments by address, independent of later comment edits. */
   sentComments?: Record<string, CommentRecord>;
-  /** True once the daemon's queue accepted the item (plan S5: a delivery without it was never sent). */
+  /** True after queue acceptance, false after cleanup, absent while acceptance is unknown. */
   enqueued?: boolean;
+  /** The transport used for this attempt, so a settings change cannot resend it. */
+  transport?: DeliveryTransport;
+  /** A direct send returned successfully and is waiting for timeline confirmation. */
+  sent?: boolean;
+  /** The queue revision authorized by an explicit Retry of an existing item. */
+  queueRetryRevision?: number;
   deliveredAt?: string;
   updatedAt?: string;
   /** The text that arrived, when the user rewrote the queued item and it differs from `text`. */
