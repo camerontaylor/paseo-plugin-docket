@@ -846,7 +846,8 @@ export interface AgentRestored {
 
 /** The agent was archived: queued and uncertain deliveries become held and are not attempted (spec 8.1). */
 function holdOnArchive(record: SurfaceRecord, cmd: HoldOnArchive): Result {
-  const hold = (d: Delivery): boolean => d.state === "queued" || d.state === "uncertain";
+  const hold = (d: Delivery): boolean => d.state === "queued" || d.state === "uncertain"
+    || (d.state === "failed" && d.transport === "queue" && d.enqueued === true);
   if (record.orphanedAt && !record.deliveries.some(hold)) return done(record);
   const deliveries = record.deliveries.map((d) => (hold(d) ? { ...d, state: "held" as const, updatedAt: cmd.now } : d));
   return done(bump(record, { deliveries, orphanedAt: record.orphanedAt ?? cmd.now }));
@@ -872,7 +873,10 @@ export const DELIVERY_TRANSITIONS: Record<DeliveryState, DeliveryState[]> = {
 
 export interface DeliveryPatch {
   attempts?: number;
-  enqueued?: boolean;
+  enqueued?: boolean | null;
+  transport?: Delivery["transport"];
+  sent?: boolean;
+  queueRetryRevision?: number | null;
   receivedText?: string;
   lastError?: string | null;
 }
@@ -898,8 +902,12 @@ function updateDelivery(record: SurfaceRecord, cmd: UpdateDelivery): Result {
   if (cmd.messageId !== undefined && cmd.messageId !== d.messageId) {
     return refuse("bad-delivery-transition", `delivery ${cmd.n} no longer has message id ${cmd.messageId}`);
   }
-  if (cmd.to !== undefined && cmd.to !== d.state
-    && (!DELIVERY_TRANSITIONS[d.state].includes(cmd.to) || (d.state === "held" && !d.enqueued))) {
+  // A failed item can be retried or removed in the host's composer.
+  const composerOutcome = d.state === "failed" && d.transport === "queue" && d.enqueued
+    && cmd.messageId === d.messageId && (cmd.to === "delivered" || cmd.to === "removed");
+  const heldWithoutAttempt = d.state === "held" && !d.enqueued && !(cmd.to === "delivered" && d.transport);
+  if (cmd.to !== undefined && cmd.to !== d.state && !composerOutcome
+    && (!DELIVERY_TRANSITIONS[d.state].includes(cmd.to) || heldWithoutAttempt)) {
     return refuse("bad-delivery-transition", `delivery ${cmd.n} is ${d.state} and cannot become ${cmd.to}`);
   }
   if (cmd.to === "queued" && d.state !== "queued") {
@@ -909,7 +917,12 @@ function updateDelivery(record: SurfaceRecord, cmd: UpdateDelivery): Result {
   const patch = d.text === "" ? {} : (cmd.patch ?? {});
   const next: Delivery = { ...d };
   if (patch.attempts !== undefined) next.attempts = patch.attempts;
-  if (patch.enqueued !== undefined) next.enqueued = patch.enqueued;
+  if (patch.enqueued === null) delete next.enqueued;
+  else if (patch.enqueued !== undefined) next.enqueued = patch.enqueued;
+  if (patch.transport !== undefined) next.transport = patch.transport;
+  if (patch.sent !== undefined) next.sent = patch.sent;
+  if (patch.queueRetryRevision === null) delete next.queueRetryRevision;
+  else if (patch.queueRetryRevision !== undefined) next.queueRetryRevision = patch.queueRetryRevision;
   if (patch.receivedText !== undefined && patch.receivedText !== d.text) next.receivedText = patch.receivedText;
   if (patch.lastError === null) delete next.lastError;
   else if (patch.lastError !== undefined) next.lastError = patch.lastError;
@@ -927,6 +940,7 @@ export interface RetryDelivery {
   n: number;
   /** A new message id, for a retry that must not repeat the old one (plan S5, direct transport). */
   messageId?: string;
+  queueRetryRevision?: number;
   now: string;
 }
 
@@ -942,6 +956,9 @@ function retryDelivery(record: SurfaceRecord, cmd: RetryDelivery): Result {
   const next: Delivery = { ...d, state: "queued", attempts: 0, enqueued: false, updatedAt: cmd.now };
   delete next.lastError;
   delete next.receivedText;
+  delete next.sent;
+  if (cmd.queueRetryRevision === undefined) delete next.queueRetryRevision;
+  else next.queueRetryRevision = cmd.queueRetryRevision;
   if (cmd.messageId !== undefined) next.messageId = cmd.messageId;
   return done(bump(record, { deliveries: record.deliveries.map((x) => (x.n === d.n ? next : x)) }));
 }
@@ -1001,7 +1018,7 @@ function deleteDecisions(record: SurfaceRecord, cmd: DeleteDecisions): Result {
         if (d.comments.some((on) => !sentComment(d, on))) return "comment-history-unavailable";
         continue;
       }
-      if (d.state === "queued" || d.state === "uncertain" || (d.state === "held" && d.enqueued)
+      if (d.state === "queued" || d.state === "uncertain" || (d.state === "held" && (d.enqueued || (d.transport === "queue" && d.enqueued === undefined)))
         || d.comments.length > 0 || d.targets.some((t) => !dead.has(t))) return "delivery-pending";
     }
     return undefined;

@@ -4,3 +4,7 @@ Node only: the store, evidence, tools and transports. May use `class`. Never imp
 
 
 Evidence file reads require Linux with accessible `/proc/self/fd` and refuse to read bytes if the opened descriptor cannot be verified. Git runs with repository-configured helpers disabled. The private Git directory used for diffs carries a fixed allowlist of validated file metadata and line-ending settings.
+
+Delivery uses the persisted surface outbox, the decision table in `shared/delivery.ts`, and either the fork's durable queue or the stock direct-send API. The host-scoped `delivery` settings select `auto` (default) or `direct` at startup. A delivery that has already attempted a host call keeps its transport so a restart or settings change can reconcile it safely. The server worker's `retry(surfaceId, n)` is the entry point for explicit retries.
+
+The pinned SDK provides the host API in handler contexts, so recovery starts on the first registered lifecycle callback. The stock API has a check-to-send race because the idle and permission checks are separate from the send. On the fork, the daemon can drain an item after an offline archive and restore before Docket can remove it. Preventing that window requires the daemon-side archive hold from H1.

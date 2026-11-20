@@ -2,6 +2,11 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { defineSettings } from "@getpaseo/plugin";
+import { z } from "zod";
+import { startDelivery } from "./server/delivery";
+import type { PaseoApi } from "./server/delivery-host";
+import { openStore } from "./server/store";
 import { noopTool } from "./server/noop-tool";
 
 export default function contribute(server: PluginServerContext) {
@@ -16,10 +21,40 @@ export default function contribute(server: PluginServerContext) {
   }
   console.log(`[docket] loaded; PASEO_HOME=${home ?? "<unset>"}`);
 
-  server.before("agent.session_open", ({ request }) => ({
-    ...request,
-    tools: [...request.tools, noopTool],
+  const settings = server.registerSettings(defineSettings({
+    id: "delivery",
+    scope: "host",
+    version: 1,
+    schema: z.object({ transport: z.enum(["auto", "direct"]).default("auto") }),
   }));
+  let delivery: Promise<ReturnType<typeof startDelivery>> | undefined;
 
-  return () => {};
+  // The SDK supplies the host API in handler contexts. Start recovery as soon
+  // as one is available, without blocking the session-open hook on host RPCs.
+  function connect(paseo: PaseoApi) {
+    return delivery ??= Promise.all([openStore(), settings.read()])
+      .then(([store, config]) => startDelivery(store, paseo, {
+        forceDirect: config.status === "ready" && config.values.transport === "direct",
+      }))
+      .catch((error: unknown) => {
+        delivery = undefined;
+        throw error;
+      });
+  }
+
+  const stopHooks = [
+    server.before("agent.session_open", ({ request }, { paseo }) => {
+      void connect(paseo).catch(() => console.warn("[docket] delivery startup failed"));
+      return { ...request, tools: [...request.tools, noopTool] };
+    }),
+    server.addHook("agent.turn.before", async ({ agent }, { paseo }) => (await connect(paseo)).check(agent.id)),
+    server.addHook("agent.turn.after", async ({ agent }, { paseo }) => (await connect(paseo)).check(agent.id)),
+    server.addHook("agent.permission.after", async ({ agent }, { paseo }) => (await connect(paseo)).check(agent.id)),
+    server.addHook("agent.archive.after", async ({ agent }, { paseo }) => (await connect(paseo)).archive(agent.id)),
+  ];
+  return async () => {
+    for (const stop of stopHooks) stop();
+    const worker = await delivery?.catch(() => undefined);
+    await worker?.stop();
+  };
 }
