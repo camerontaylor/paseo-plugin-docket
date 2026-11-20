@@ -1,5 +1,5 @@
 import { deliveryAction, type AgentDeliveryState, type DeliveryTransport } from "../shared/delivery";
-import type { Delivery, SurfaceRecord } from "../shared/record";
+import { queueMayHoldDelivery, type Delivery, type SurfaceRecord } from "../shared/record";
 import type { DeliveryPatch } from "../shared/transitions";
 import { hasErrorCode, queueOf, selectTransport, timelineText, type DeliveryAgent, type PaseoApi, type QueueSnapshot } from "./delivery-host";
 import type { Store } from "./store";
@@ -94,7 +94,7 @@ export function startDelivery(store: Store, paseo: PaseoApi, options: DeliveryOp
   }
 
   async function reconcileDelivery(record: SurfaceRecord, d: Delivery, agent: DeliveryAgent, state: AgentDeliveryState) {
-    if (!d.text || d.state === "removed" || (d.state === "failed" && !d.enqueued)) return;
+    if (!d.text || d.state === "removed" || (d.state === "failed" && !queueMayHoldDelivery(d))) return;
     if (state === "missing") {
       // Agent lookup can miss before the daemon finishes deleting its queue.
       if (d.state === "queued" || d.state === "uncertain") await update(record, d, "failed", { lastError: "agent_not_found", queueRetryRevision: null });
@@ -273,7 +273,7 @@ export function startDelivery(store: Store, paseo: PaseoApi, options: DeliveryOp
 
   function sweep(): void {
     const candidates = store.list().filter((record) => record.orphanedAt || record.deliveries.some((d) =>
-      d.state === "queued" || d.state === "uncertain" || (d.enqueued && d.state !== "removed") || (d.state === "held" && d.transport)));
+      d.state === "queued" || d.state === "uncertain" || (queueMayHoldDelivery(d) && d.state !== "removed") || (d.state === "held" && d.transport)));
     for (const id of new Set(candidates.map((record) => record.agentId))) schedule(id);
   }
 

@@ -132,6 +132,11 @@ export interface Delivery {
   lastError?: string;
 }
 
+/** An accepted enqueue or a persisted queue attempt whose outcome is still unknown. */
+export function queueMayHoldDelivery(d: Delivery): boolean {
+  return d.enqueued === true || (d.transport === "queue" && d.enqueued === undefined);
+}
+
 export interface Closed {
   at: string;
   by: "agent" | "replaced" | "expired";
@@ -229,6 +234,10 @@ function optionalString(v: unknown): boolean {
   return v === undefined || typeof v === "string";
 }
 
+function optionalNumber(v: unknown): boolean {
+  return v === undefined || (typeof v === "number" && Number.isFinite(v));
+}
+
 function comment(v: unknown): boolean {
   return object(v) && typeof v.version === "number" && typeof v.text === "string"
     && optionalString(v.title) && (v.delivery === null || typeof v.delivery === "number");
@@ -282,11 +291,12 @@ export function isRecordV1(value: unknown): value is SurfaceRecord {
     object(r.questions) &&
     Object.values(r.questions).every((q) =>
       object(q) && (q.kind === "choice" || q.kind === "text" || q.kind === "review")
-      && typeof q.label === "string" && typeof q.prompt === "string" && state(q.state)
+      && typeof q.label === "string" && typeof q.prompt === "string" && state(q.state) && optionalNumber(q.delivery)
       && (q.answer === undefined || (object(q.answer) &&
-        (q.answer.text === undefined || strings(q.answer.text)) && optionalString(q.answer.note)))
+        (q.answer.text === undefined || strings(q.answer.text)) && optionalString(q.answer.note) && optionalString(q.answer.other)))
       && (q.items === undefined || (object(q.items) && Object.values(q.items).every((item) =>
         object(item) && typeof item.title === "string" && state(item.state)
+        && optionalNumber(item.delivery) && optionalString(item.detail)
         && (item.answer === undefined || (object(item.answer) &&
           optionalString(item.answer.verdict) && optionalString(item.answer.comment)))
       )))

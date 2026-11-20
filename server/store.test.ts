@@ -361,6 +361,30 @@ describe("start scan", () => {
     await expect(fs.readFile(path.join(dir, "evidence", record.id, "x.txt"), "utf8")).resolves.toBe("keep");
   });
 
+  it.each([
+    ["question delivery reference", "queue", { delivery: "1" }],
+    ["review-item delivery reference", "chk.a", { delivery: "1" }],
+    ["answer other text", "queue", { answer: { at: "2026-11-21T10:00:00Z", other: { toString: null } } }],
+    ["review-item detail", "chk.a", { detail: { toString: null } }],
+  ])("rejects a malformed %s on restart", async (_name, target, fields) => {
+    const first = await open();
+    const { record } = must(await first.create({ agentId: "ag1", document: DOC, evidence: { "x.txt": "keep" } }));
+    await answered(first, record.id, [target], false);
+    const pending = first.get(record.id)!;
+    const entry = target === "queue" ? pending.questions.queue : pending.questions.chk.items!.a;
+    Object.assign(entry, fields);
+    const file = path.join(dir, "surfaces", record.id, "record.json");
+    const body = JSON.stringify(pending);
+    await fs.writeFile(file, body);
+
+    const reopened = await open();
+    expect(reopened.get(record.id)).toBeUndefined();
+    expect(reopened.unreadable).toEqual([{ surfaceId: record.id, file, reason: "not a valid record" }]);
+    expect(reopened.decisions({ text: "keep" })).toEqual([]);
+    await expect(fs.readFile(file, "utf8")).resolves.toBe(body);
+    await expect(fs.readFile(path.join(dir, "evidence", record.id, "x.txt"), "utf8")).resolves.toBe("keep");
+  });
+
   it("loads a compacted legacy delivery without optional queue or comment metadata", async () => {
     const first = await open();
     const { record } = must(await first.create({ agentId: "ag1", document: DOC }));

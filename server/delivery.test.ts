@@ -153,6 +153,42 @@ describe("queue transport", () => {
     expect(host.queue.enqueue).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("protects a lost enqueue acknowledgement while agent lookup misses (drained: %s)", async (drained) => {
+    const d = await createDelivery();
+    const host = fakePaseo();
+    const enqueue = host.queue.enqueue.getMockImplementation()!;
+    host.queue.enqueue.mockImplementationOnce(async (options) => {
+      await enqueue(options);
+      host.missing();
+      throw new Error("acknowledgement lost");
+    });
+    const delivery = start(host);
+    await delivery.check(agentId);
+    await delivery.check(agentId);
+
+    expect(store.get(d.surface)?.deliveries[0]).toMatchObject({ state: "failed", transport: "queue" });
+    expect(store.get(d.surface)?.deliveries[0].enqueued).toBeUndefined();
+    expect(host.items.get(d.messageId)?.text).toBe(d.text);
+    expect(await store.deleteDecision(d.surface, "choice"))
+      .toMatchObject({ ok: false, refusal: { code: "delivery-pending" } });
+
+    await delivery.stop();
+    store = await openStore({ root, now });
+    expect(await store.deleteDecision(d.surface, "choice"))
+      .toMatchObject({ ok: false, refusal: { code: "delivery-pending" } });
+
+    host.missing(false);
+    if (drained) host.drain(d.messageId);
+    else await host.queue.remove(d.messageId, (await host.queue.list()).revision);
+    await start(host).check(agentId);
+
+    expect(store.get(d.surface)?.deliveries[0]).toMatchObject({
+      state: drained ? "delivered" : "removed", enqueued: false,
+    });
+    expect((await store.deleteDecision(d.surface, "choice")).ok).toBe(true);
+    expect(host.queue.enqueue).toHaveBeenCalledTimes(1);
+  });
+
   it("removes a confirmed uncertain blocker after a concurrent revision change", async () => {
     const d = await createDelivery();
     const host = fakePaseo();

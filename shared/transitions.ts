@@ -40,6 +40,7 @@ import {
   hasOpenQuestion,
   hasOwn,
   own,
+  queueMayHoldDelivery,
   reviewState,
   surfaceStatus,
 } from "./record";
@@ -848,7 +849,7 @@ export interface AgentRestored {
 /** The agent was archived: queued and uncertain deliveries become held and are not attempted (spec 8.1). */
 function holdOnArchive(record: SurfaceRecord, cmd: HoldOnArchive): Result {
   const hold = (d: Delivery): boolean => d.state === "queued" || d.state === "uncertain"
-    || (d.state === "failed" && d.transport === "queue" && d.enqueued === true);
+    || (d.state === "failed" && d.transport === "queue" && queueMayHoldDelivery(d));
   if (record.orphanedAt && !record.deliveries.some(hold)) return done(record);
   const deliveries = record.deliveries.map((d) => (hold(d) ? { ...d, state: "held" as const, updatedAt: cmd.now } : d));
   return done(bump(record, { deliveries, orphanedAt: record.orphanedAt ?? cmd.now }));
@@ -904,7 +905,7 @@ function updateDelivery(record: SurfaceRecord, cmd: UpdateDelivery): Result {
     return refuse("bad-delivery-transition", `delivery ${cmd.n} no longer has message id ${cmd.messageId}`);
   }
   // A failed item can be retried or removed in the host's composer.
-  const composerOutcome = d.state === "failed" && d.transport === "queue" && d.enqueued
+  const composerOutcome = d.state === "failed" && d.transport === "queue" && queueMayHoldDelivery(d)
     && cmd.messageId === d.messageId && (cmd.to === "delivered" || cmd.to === "removed");
   const heldWithoutAttempt = d.state === "held" && !d.enqueued && !(cmd.to === "delivered" && d.transport);
   if (cmd.to !== undefined && cmd.to !== d.state && !composerOutcome
@@ -1019,8 +1020,7 @@ function deleteDecisions(record: SurfaceRecord, cmd: DeleteDecisions): Result {
         if (d.comments.some((on) => !sentComment(d, on))) return "comment-history-unavailable";
         continue;
       }
-      if (d.state === "queued" || d.state === "uncertain" || d.enqueued
-        || (d.state === "held" && d.transport === "queue" && d.enqueued === undefined)
+      if (d.state === "queued" || d.state === "uncertain" || queueMayHoldDelivery(d)
         || d.comments.length > 0 || d.targets.some((t) => !dead.has(t))) return "delivery-pending";
     }
     return undefined;
