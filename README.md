@@ -6,7 +6,7 @@ Status: Pre-alpha: nothing is built yet. Design and research live in the plannin
 
 - Plugin id: `docket`
 - Agent tools: `docket_show`, `docket_close`, `docket_get`, `docket_reference`
-- Requires Paseo plugin SDK 0.16.2 or later
+- Requires Paseo 0.16.0-beta.2 or later (provisional; see OVERVIEW.md)
 
 ## Licence
 

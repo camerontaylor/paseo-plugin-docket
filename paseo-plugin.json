@@ -1,0 +1,8 @@
+{
+  "id": "docket",
+  "name": "Docket",
+  "description": "Questions that outlive the conversation: agents show a surface the user answers from the chat, a panel or one inbox.",
+  "requirements": {
+    "paseo": ">=0.16.0-beta.2"
+  }
+}
