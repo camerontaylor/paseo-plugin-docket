@@ -41,6 +41,10 @@ for (const t of tools) {
   groups[k].hosts.add(t.daemonHost);
   groups[k].phases.add(t.phase);
 }
+out.p2Observations = tools
+  .map((t) => ({ ts: t.ts, observedAt: t.observedAt ?? null, daemonHost: t.daemonHost, copyId: t.copyId, hostId: t.hostId ?? null, callId: t.callId, observation: t.observation ?? null, label: t.label ?? null, name: t.name, status: t.status, phase: t.phase, detailType: t.detailType, hasMarker: t.hasMarker, outputSnippet: t.outputSnippet }))
+  .sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
+out.p2Truncated = rows.filter((r) => r.event === "tool_call.truncated").map((r) => ({ ts: r.ts, callId: r.callId, cap: r.cap }));
 out.p2 = Object.entries(groups).map(([k, g]) => ({ key: k, count: g.count, hosts: [...g.hosts], phases: [...g.phases], sample: g.sample }));
 out.serverToolRuns = rows.filter((r) => r.event === "tool.start").map((r) => ({ ts: r.ts, daemonHost: r.daemonHost, agentId: r.agentId }));
 out.serverStarts = rows.filter((r) => r.event === "server.start").map((r) => ({ ts: r.ts, daemonHost: r.daemonHost, pid: r.pid }));
@@ -52,7 +56,10 @@ else {
   console.log(`${out.file}: ${out.rows} rows, ${out.errors} error-ish`);
   console.log("\nP1 copies:");
   for (const c of out.p1) console.log(`  ${c.copyId} on ${c.daemonHost} hub=${c.hubs.join(",")} host=${c.hostIds.join(",") || "?"} platform=${c.platforms.join(",") || "?"} bundle=${c.bundles.join(",")} counters=${c.counterCount} (${c.firstSeq}..${c.lastSeq}, gaps ${c.seqGapsOrResets}) hub sees [${c.hubCopiesSeen.join(" ")}]\n    contributions: ${JSON.stringify(c.contributions)}\n    sub: ${c.subscriptionEvents.join("; ")}`);
-  console.log("\nP2 tool_call groups:");
+  console.log("\nP2 observations (each transformer invocation reported, time order):");
+  for (const o of out.p2Observations) console.log(`  ${o.ts} ${o.daemonHost} copy=${o.copyId} call=${o.callId} #${o.observation} label=${o.label ?? "-"} ${o.name} ${o.status}/${o.phase} ${o.detailType} marker=${o.hasMarker}`);
+  for (const t of out.p2Truncated) console.log(`  TRUNCATED ${t.ts} call=${t.callId} after ${t.cap}`);
+  console.log("\nP2 aggregates by name|status|detailType|marker:");
   for (const g of out.p2) console.log(`  ${g.key}  x${g.count} phases=${g.phases.join(",")}\n    sample: ${JSON.stringify(g.sample)}`);
   console.log(`\nserver starts: ${out.serverStarts.map((s) => `${s.daemonHost}@${s.ts}(pid ${s.pid})`).join(", ")}`);
   console.log(`server tool runs: ${out.serverToolRuns.length}, session_open rows: ${out.sessionOpens}`);

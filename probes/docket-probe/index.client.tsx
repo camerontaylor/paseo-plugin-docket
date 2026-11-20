@@ -79,7 +79,8 @@ export default function contribute(client: PluginClientContext) {
 
   // P2: observe every tool_call item; report only ones for the echo tool or carrying the marker.
   // Every invocation is an observation; a replay after reopen/restart must show up, so nothing is de-duplicated.
-  // Bound: the first 50 observations per callId are reported, then every 50th.
+  // Bound: up to MAX_OBSERVATIONS per callId; the next one writes a single explicit `tool_call.truncated` row.
+  const MAX_OBSERVATIONS = 2000;
   const observations = new Map<string, number>();
   attempt("timelineTransformer", "addTimelineTransformer", () =>
     client.addTimelineTransformer({
@@ -95,11 +96,18 @@ export default function contribute(client: PluginClientContext) {
           if (!hasMarker && !named) return undefined;
           const n = (observations.get(item.callId) ?? 0) + 1;
           observations.set(item.callId, n);
-          if (n > 50 && n % 50 !== 0) return undefined;
+          if (n > MAX_OBSERVATIONS + 1) return undefined;
+          if (n === MAX_OBSERVATIONS + 1) {
+            report("tool_call.truncated", { hostId: copy.hostId, callId: item.callId, observation: n, observedAt: Date.now(), cap: MAX_OBSERVATIONS });
+            return undefined;
+          }
+          const input = (detail as { input?: { note?: unknown } } | undefined)?.input;
+          const label = input && typeof input.note === "string" ? input.note : null;
           report("tool_call", {
             hostId: copy.hostId,
             callId: item.callId,
             observation: n,
+            label,
             observedAt: Date.now(),
             name: item.name,
             status: item.status,

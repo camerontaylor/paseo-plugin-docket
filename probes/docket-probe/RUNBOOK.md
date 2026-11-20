@@ -6,6 +6,8 @@ Read results with the summary script, never from the screen:
 
     node probes/docket-probe/scripts/summarize.mjs [path-to-report.jsonl] [--json]
 
+The summary lists every P2 observation (time, copy, callId, observation number, label) before the aggregates; `--json` has `p2Observations`. Self-test: `node probes/docket-probe/scripts/summarize.test.mjs`.
+
 Built against 0.16.0-beta.2: it uses only SDK methods that build has, and records a missing one
 (`missing:<method>`) instead of failing. There is no workspace-row-badge method in that build; the
 probe reports this under `workspaceRowBadge`. The composer pill registers against a placeholder
@@ -51,7 +53,7 @@ What to read (per `p1` row in the summary):
 The tool `docket_probe_echo({note?, delayMs?})` is added to every new agent session by a
 `agent.session_open` hook and returns `DOCKET_PROBE_MARKER ok 7f3a9c1e` then `echo: <note>`. A
 client transformer on `tool_call` items reports `name`, `status`, `phase`, `detailType` and
-`hasMarker` (the marker found in `detail.output`), plus a per-callId `observation` counter and `observedAt`, for echo-tool calls. Every transformer invocation is reported (first 50 per callId, then every 50th), so a replay after reopen, restart or reload shows as a higher `observation` for the same `callId` (or a new `copyId`). Open an app window for the
+`hasMarker` (the marker found in `detail.output`), plus a per-callId `observation` counter, `observedAt` and `label` (the call input `note`), for echo-tool calls. Every transformer invocation is reported (up to 2000 per callId, then one `tool_call.truncated` row), so a replay after reopen, restart or reload shows as a higher `observation` for the same `callId` (or a new `copyId`). Open an app window for the
 duration (the transformer runs in the client).
 
 Prompt for each agent: *"Call the tool docket_probe_echo with note `<label>` and delayMs 20000, then tell me what it returned."*
