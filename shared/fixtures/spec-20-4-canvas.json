@@ -1,0 +1,27 @@
+{
+  "v": 1,
+  "summary": "Pro for 10 seats is $290 a month.",
+  "context": "Pricing the team plan you asked about. The order is not placed until you send this.",
+  "questions": [
+    {
+      "id": "order",
+      "kind": "text",
+      "prompt": "Order",
+      "recommend": "Pro, 10 seats"
+    }
+  ],
+  "view": {
+    "t": "canvas",
+    "alt": "Plan and seat pickers with the monthly cost.",
+    "data": {
+      "prices": {
+        "Basic": 12,
+        "Pro": 29
+      }
+    },
+    "html": "<!doctype html><select id=p><option>Basic<option selected>Pro</select><input id=s type=range min=1 max=50 value=10><b id=t></b><script>const f=()=>{t.textContent='$'+surface.data.prices[p.value]*s.value+' a month';surface.answer('order',p.value+', '+s.value+' seats')};p.onchange=s.oninput=f;f()</script>"
+  },
+  "submit": {
+    "label": "Order this"
+  }
+}

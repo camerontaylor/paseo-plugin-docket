@@ -1,0 +1,72 @@
+{
+  "v": 1,
+  "summary": "Plan for the queue move: four steps, one of them risky.",
+  "context": "Plan only; no code is written. Your marks decide which steps I do.",
+  "questions": [
+    {
+      "id": "queue",
+      "kind": "choice",
+      "prompt": "Which queue?",
+      "recommend": "pg_boss",
+      "options": [
+        {
+          "id": "pg_boss",
+          "label": "pg-boss"
+        },
+        {
+          "id": "bullmq",
+          "label": "BullMQ"
+        }
+      ]
+    },
+    {
+      "id": "steps",
+      "kind": "review",
+      "prompt": "Plan steps",
+      "of": "plan",
+      "verdicts": [
+        "do",
+        "drop"
+      ],
+      "recommend": "do"
+    }
+  ],
+  "view": [
+    {
+      "t": "plan",
+      "steps": [
+        {
+          "id": "s1",
+          "title": "Add the jobs table",
+          "files": [
+            "db/migrations/0042_jobs.sql"
+          ]
+        },
+        {
+          "id": "s2",
+          "title": "Move the mailer onto the queue",
+          "ref": "src/mail/send.ts:40-88",
+          "detail": "The retry loop at line 61 moves into the worker.",
+          "after": [
+            "s1"
+          ]
+        },
+        {
+          "id": "s3",
+          "title": "Remove the cron fallback",
+          "after": [
+            "s2"
+          ],
+          "detail": "**Risk:** no fallback if the worker is down."
+        },
+        {
+          "id": "s4",
+          "title": "Add a dead-letter alert",
+          "after": [
+            "s2"
+          ]
+        }
+      ]
+    }
+  ]
+}

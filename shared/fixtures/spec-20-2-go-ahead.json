@@ -1,0 +1,20 @@
+{
+  "v": 1,
+  "summary": "I am naming the new table job_runs unless you prefer another name.",
+  "context": "Writing the migration for the queue work now. The name is easy to change until the migration is merged.",
+  "meanwhile": "go_ahead",
+  "until": "The migration is merged.",
+  "questions": [
+    {
+      "id": "table",
+      "kind": "choice",
+      "prompt": "Table name",
+      "recommend": "job_runs",
+      "options": [
+        "job_runs",
+        "jobs",
+        "queue_jobs"
+      ]
+    }
+  ]
+}
