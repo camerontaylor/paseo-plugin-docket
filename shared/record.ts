@@ -211,11 +211,57 @@ export function draftIsEmpty(draft: Draft): boolean {
   return Object.keys(draft).every((key) => key === "version");
 }
 
+type StoredObject = Record<string, unknown>;
+
+function object(v: unknown): v is StoredObject {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function dictionary(v: unknown, valid: (entry: unknown) => boolean): boolean {
+  return object(v) && Object.values(v).every(valid);
+}
+
+function strings(v: unknown): boolean {
+  return Array.isArray(v) && v.every((entry) => typeof entry === "string");
+}
+
+function optionalString(v: unknown): boolean {
+  return v === undefined || typeof v === "string";
+}
+
+function comment(v: unknown): boolean {
+  return object(v) && typeof v.version === "number" && typeof v.text === "string"
+    && optionalString(v.title) && (v.delivery === null || typeof v.delivery === "number");
+}
+
+function draft(v: unknown): boolean {
+  return object(v) && typeof v.version === "number"
+    && (optionalString(v.value) || strings(v.value))
+    && optionalString(v.other) && optionalString(v.note)
+    && optionalString(v.verdict) && optionalString(v.comment)
+    && (v.skipped === undefined || typeof v.skipped === "boolean")
+    && (v.by === undefined || v.by === "recommended");
+}
+
+function delivery(v: unknown): boolean {
+  return object(v) && typeof v.n === "number" && typeof v.messageId === "string"
+    && (v.state === "queued" || v.state === "held" || v.state === "uncertain"
+      || v.state === "delivered" || v.state === "failed" || v.state === "removed")
+    && typeof v.attempts === "number" && typeof v.createdAt === "string"
+    && typeof v.text === "string" && strings(v.targets) && strings(v.comments)
+    && (v.sentComments === undefined || dictionary(v.sentComments, comment))
+    && (v.transport === undefined || v.transport === "queue" || v.transport === "direct")
+    && (v.enqueued === undefined || typeof v.enqueued === "boolean")
+    && (v.sent === undefined || typeof v.sent === "boolean")
+    && (v.queueRetryRevision === undefined || typeof v.queueRetryRevision === "number")
+    && optionalString(v.deliveredAt) && optionalString(v.updatedAt)
+    && optionalString(v.receivedText) && optionalString(v.lastError);
+}
+
 /** A record read from disk that this build understands. Unknown schemas are never passed here. */
 export function isRecordV1(value: unknown): value is SurfaceRecord {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const r = value as Record<string, unknown>;
-  const obj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  if (!object(value)) return false;
+  const r = value;
   const state = (v: unknown): boolean => v === "open" || v === "answered" || v === "skipped" || v === "closed";
   const nullableString = (v: unknown): boolean => v === null || typeof v === "string";
   return (
@@ -230,19 +276,30 @@ export function isRecordV1(value: unknown): value is SurfaceRecord {
     nullableString(r.orphanedAt) &&
     nullableString(r.resolvedAt) &&
     (r.compactedAt === null || (typeof r.compactedAt === "string" && Number.isFinite(Date.parse(r.compactedAt)) && r.document === null)) &&
-    (r.document === null || obj(r.document)) &&
-    obj(r.questions) &&
+    (r.document === null || (object(r.document) &&
+      (r.document.questions === undefined || (Array.isArray(r.document.questions)
+        && r.document.questions.every((q) => object(q) && typeof q.id === "string" && optionalString(q.label)))))) &&
+    object(r.questions) &&
     Object.values(r.questions).every((q) =>
-      obj(q) && (q.kind === "choice" || q.kind === "text" || q.kind === "review")
+      object(q) && (q.kind === "choice" || q.kind === "text" || q.kind === "review")
       && typeof q.label === "string" && typeof q.prompt === "string" && state(q.state)
-      && (q.items === undefined || (obj(q.items) && Object.values(q.items).every((item) =>
-        obj(item) && typeof item.title === "string" && state(item.state)
+      && (q.answer === undefined || (object(q.answer) &&
+        (q.answer.text === undefined || strings(q.answer.text)) && optionalString(q.answer.note)))
+      && (q.items === undefined || (object(q.items) && Object.values(q.items).every((item) =>
+        object(item) && typeof item.title === "string" && state(item.state)
+        && (item.answer === undefined || (object(item.answer) &&
+          optionalString(item.answer.verdict) && optionalString(item.answer.comment)))
       )))
     ) &&
-    obj(r.drafts) &&
-    obj(r.comments) &&
-    obj(r.blockItems) &&
-    obj(r.snapshots) &&
-    Array.isArray(r.deliveries)
+    dictionary(r.drafts, draft) &&
+    dictionary(r.comments, comment) &&
+    dictionary(r.blockItems, (items) => Array.isArray(items) && items.every((item) =>
+      object(item) && typeof item.id === "string" && typeof item.title === "string" && optionalString(item.detail)
+    )) &&
+    dictionary(r.snapshots, (snapshot) =>
+      object(snapshot) && typeof snapshot.hash === "string"
+      && typeof snapshot.readAt === "string" && typeof snapshot.bytes === "number"
+    ) &&
+    Array.isArray(r.deliveries) && r.deliveries.every(delivery)
   );
 }

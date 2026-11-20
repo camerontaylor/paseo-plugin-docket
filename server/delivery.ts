@@ -96,6 +96,7 @@ export function startDelivery(store: Store, paseo: PaseoApi, options: DeliveryOp
   async function reconcileDelivery(record: SurfaceRecord, d: Delivery, agent: DeliveryAgent, state: AgentDeliveryState) {
     if (!d.text || d.state === "removed" || (d.state === "failed" && !d.enqueued)) return;
     if (state === "missing") {
+      // Agent lookup can miss before the daemon finishes deleting its queue.
       if (d.state === "queued" || d.state === "uncertain") await update(record, d, "failed", { lastError: "agent_not_found", queueRetryRevision: null });
       return;
     }

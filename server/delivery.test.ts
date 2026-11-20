@@ -69,7 +69,7 @@ function fakePaseo(useQueue = true) {
     permission: (value: boolean) => { permission = value; },
     archive: (value: boolean) => { archived = value; },
     running: (value: boolean) => { running = value; },
-    missing: () => { exists = false; },
+    missing: (value = true) => { exists = !value; },
     conflict: () => { conflict = true; },
     drain(id: string) {
       if (archived || running || permission) return;
@@ -324,6 +324,14 @@ it("protects a failed delivery from deletion until the composer removes its item
     .toMatchObject({ ok: false, refusal: { code: "delivery-pending" } });
   expect(store.get(d.surface)?.deliveries[0]).toMatchObject({ state: "failed", text: d.text });
   expect(host.items.get(d.messageId)?.text).toBe(d.text);
+
+  // Agent lookup can fail while its durable queue still holds the item.
+  host.missing();
+  await delivery.check(agentId);
+  expect(store.get(d.surface)?.deliveries[0]).toMatchObject({ state: "failed", enqueued: true });
+  expect(await store.deleteDecision(d.surface, "choice"))
+    .toMatchObject({ ok: false, refusal: { code: "delivery-pending" } });
+  host.missing(false);
 
   await host.queue.remove(d.messageId, (await host.queue.list()).revision);
   await delivery.check(agentId);
