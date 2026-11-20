@@ -380,13 +380,20 @@ describe("send", () => {
     expect(refusal(send(r, [{ on: "plan.s1", version: 1 }])).problems?.[0].code).toBe("no-comment");
     expect(refusal(send(r, [{ on: "plan.zz", version: 1 }])).problems?.[0].code).toBe("unknown-target");
     expect(refusal(send(r, [{ on: "plan.s2", version: 2 }, { on: "plan.s2", version: 2 }])).problems?.[0].code).toBe("duplicate-target");
+    const cleared = run(r, { kind: "setComment", on: "plan.s2", text: null, baseVersion: 2, now: T1 });
+    expect(refusal(send(cleared, [{ on: "plan.s2", version: 2 }]))).toMatchObject({
+      code: "stale-send",
+      conflicts: [{ target: "plan.s2", sentVersion: 2, current: null }],
+    });
+    expect(refusal(send(cleared, [{ on: "plan.s2", version: 3 }])).problems?.[0].code).toBe("no-comment");
     const sent = run(r, { kind: "send", targets: [], comments: [{ on: "plan.s2", version: 2 }], now: T1 });
     expect(refusal(send(sent, [{ on: "plan.s2", version: 2 }])).problems?.[0].code).toBe("no-comment");
   });
 
   it("sends nothing on a failed send: the record is untouched", () => {
     const r = draft(make(THREE), "queue", { value: "bullmq" });
-    applyCommand(r, { kind: "send", targets: [{ target: "queue", version: 1 }, { target: "name", version: 1 }], now: T1 });
+    const result = applyCommand(r, { kind: "send", targets: [{ target: "queue", version: 1 }, { target: "name", version: 1 }], now: T1 });
+    expect(refusal(result)).toMatchObject({ code: "stale-send", conflicts: [{ target: "name", sentVersion: 1, current: null }] });
     expect(r.deliveries).toEqual([]);
     expect(r.questions.queue.state).toBe("open");
   });
@@ -501,6 +508,21 @@ describe("delivery states", () => {
     expect(refusal(to(run(r, { kind: "updateDelivery", n: 1, to: "failed", now: T1 }), "uncertain" as never)).code).toBe("bad-delivery-transition");
     expect(refusal(to(run(r, { kind: "updateDelivery", n: 1, to: "held", now: T1 }), "delivered" as never)).code).toBe("bad-delivery-transition");
     expect(refusal(to(r, "delivered" as never, 7)).code).toBe("unknown-delivery");
+  });
+
+  it.each(["delivered", "removed", "failed"] as const)("records a late %s observation for an enqueued held delivery", (state) => {
+    let r = run(queued(), { kind: "updateDelivery", n: 1, patch: { enqueued: true }, now: T1 });
+    r = run(r, { kind: "holdOnArchive", now: T1 });
+    const observation = { kind: "updateDelivery", n: 1, to: state, messageId: r.deliveries[0].messageId, now: T1 } as const;
+    expect(refusal(applyCommand(r, { ...observation, messageId: "stale-attempt" })).code).toBe("bad-delivery-transition");
+    const settled = run(r, observation);
+    expect(settled.deliveries[0].state).toBe(state);
+    expect(refusal(applyCommand(r, { kind: "deleteDecisions", questions: ["name"], now: T1 })).code).toBe("delivery-pending");
+    r = settled;
+    if (state === "delivered") {
+      r = run(r, { kind: "agentRestored", now: T1 });
+      expect(refusal(applyCommand(r, { kind: "retryDelivery", n: 1, now: T1 })).code).toBe("bad-delivery-transition");
+    }
   });
 
   it("records attempts, enqueued and the text that arrived; a patch alone is a change, a repeat is not", () => {
@@ -724,12 +746,36 @@ describe("retry while archived", () => {
 });
 
 describe("deleting a decision removes every stored copy", () => {
-  it("blanks a delivered text shared with another decision, and one that carried a comment", () => {
+  it("blanks delivered text shared with another decision and removes the deleted prompt", () => {
     let r = draft(draft(make(AB), "q", { value: "secret-answer" }), "r.a", { verdict: "approve" });
     r = setDelivered(send1(r, ["q", "r.a"]));
     r = run(r, { kind: "deleteDecisions", questions: ["q"], now: T1 });
     expect(JSON.stringify(r)).not.toContain("secret-answer");
+    expect(JSON.stringify(r)).not.toContain("Secret?");
+    expect(r.questions.q).toMatchObject({ deleted: true, prompt: "", label: "" });
+    expect(r.document?.questions?.find((q) => q.id === "q")?.prompt).toBe("");
+    expect(r.document?.questions?.find((q) => q.id === "r")).toEqual(AB.questions![1]);
     expect(r.deliveries[0].text).toBe("");
+  });
+
+  it.each([false, true])("preserves sent text and an unsent edit during redaction (legacy delivery: %s)", (legacy) => {
+    let r = run(make(PLAN_REVIEW), { kind: "setComment", on: "plan.s2", text: "original comment", baseVersion: 0, now: T0 });
+    r = draft(r, "steps.s1", { verdict: "do", comment: "secret answer" });
+    r = setDelivered(send1(r, ["steps.s1"], { comments: [{ on: "plan.s2", version: 1 }] }));
+    if (legacy) delete r.deliveries[0].sentComments;
+    r = run(r, { kind: "setComment", on: "plan.s2", text: "unsent edit", baseVersion: 1, now: T1 });
+    const redacted = run(r, { kind: "deleteDecisions", questions: ["steps"], now: T1 });
+    expect(redacted.deliveries[0]).toMatchObject({
+      text: "",
+      sentComments: { "plan.s2": { text: "original comment", version: 1, delivery: 1 } },
+    });
+    expect(redacted.comments["plan.s2"]).toMatchObject({ text: "unsent edit", version: 2, delivery: null });
+    expect(JSON.stringify(redacted)).not.toContain("secret answer");
+
+    // An already-overwritten legacy comment has only the unstructured message left.
+    delete r.deliveries[0].sentComments;
+    expect(refusal(applyCommand(r, { kind: "deleteDecisions", questions: ["steps"], now: T1 })).code)
+      .toBe("comment-history-unavailable");
   });
 });
 

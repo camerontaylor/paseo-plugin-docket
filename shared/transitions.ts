@@ -72,6 +72,7 @@ export type RefusalCode =
   | "bad-delivery-transition"
   | "agent-archived" // Retry while the agent is archived
   | "delivery-pending" // a decision whose delivery is still in the queue
+  | "comment-history-unavailable" // Redaction would discard the only copy of a sent comment
   | "delivery-redacted" // Retry of a delivery whose text the user deleted
   | "not-resolved" // compaction or deletion of something still open
   | "invalid"; // a malformed command
@@ -480,7 +481,13 @@ function setComment(record: SurfaceRecord, cmd: SetComment): Result {
     });
   }
   const comment: CommentRecord = { version: storedVersion + 1, text, title: info.title, delivery: null };
-  return done(bump(record, { comments: { ...record.comments, [cmd.on]: comment } }));
+  // Older deliveries stored the sent version only in the current comment and frozen message.
+  const deliveries = stored && stored.delivery !== null
+    ? record.deliveries.map((d) => d.n === stored.delivery && !own(d.sentComments ?? {}, cmd.on)
+      ? { ...d, sentComments: { ...d.sentComments, [cmd.on]: stored } }
+      : d)
+    : record.deliveries;
+  return done(bump(record, { comments: { ...record.comments, [cmd.on]: comment }, deliveries }));
 }
 
 // --- send --------------------------------------------------------------------
@@ -573,7 +580,7 @@ function sendRecord(record: SurfaceRecord, cmd: Send): Result {
     const stored = own(record.comments, entry.on);
     if (!itemOfBlock(record, entry.on)) {
       problems.push({ target: entry.on, code: "unknown-target", message: "not an item of a block on this surface" });
-    } else if (!stored || stored.text === "" || stored.delivery !== null) {
+    } else if (!stored || (stored.version === entry.version && (stored.text === "" || stored.delivery !== null))) {
       problems.push({ target: entry.on, code: "no-comment", message: "there is no unsent comment here" });
     }
   }
@@ -702,6 +709,7 @@ function sendRecord(record: SurfaceRecord, cmd: Send): Result {
 
   const comments = { ...record.comments };
   const deliveredComments: DeliveredComment[] = [];
+  const sentCommentSnapshots: Record<string, CommentRecord> = {};
   for (const entry of sentComments) {
     const c = comments[entry.on];
     const info = itemOfBlock(record, entry.on) as ItemInfo;
@@ -714,6 +722,7 @@ function sendRecord(record: SurfaceRecord, cmd: Send): Result {
       text: c.text,
     });
     comments[entry.on] = { ...c, delivery: n };
+    sentCommentSnapshots[entry.on] = comments[entry.on];
   }
 
   const stillOpen: StillOpen[] = [];
@@ -736,6 +745,7 @@ function sendRecord(record: SurfaceRecord, cmd: Send): Result {
     text,
     targets: planned.map((p) => p.target),
     comments: sentComments.map((c) => c.on),
+    ...(sentComments.length ? { sentComments: sentCommentSnapshots } : {}),
   };
   const next = bump(record, { questions, drafts, comments, deliveries: [...record.deliveries, delivery] });
   if (!hasOpenQuestion(next)) next.resolvedAt = cmd.now;
@@ -853,7 +863,7 @@ function agentRestored(record: SurfaceRecord): Result {
 /** Which state a delivery may move to from each state (plan D3, S5). */
 export const DELIVERY_TRANSITIONS: Record<DeliveryState, DeliveryState[]> = {
   queued: ["held", "uncertain", "delivered", "failed", "removed"],
-  held: ["queued"], // only by Retry
+  held: ["queued", "delivered", "removed", "failed"], // Retry or terminal observation of an accepted enqueue
   uncertain: ["delivered", "failed", "removed", "held"],
   delivered: [],
   failed: ["queued"], // only by Retry
@@ -870,6 +880,8 @@ export interface DeliveryPatch {
 export interface UpdateDelivery {
   kind: "updateDelivery";
   n: number;
+  /** Set by observers that can identify the message, including after a retry changed its ID. */
+  messageId?: string;
   /** A new state; absent to record a patch alone. */
   to?: DeliveryState;
   patch?: DeliveryPatch;
@@ -883,7 +895,11 @@ function findDelivery(record: SurfaceRecord, n: number): Delivery | undefined {
 function updateDelivery(record: SurfaceRecord, cmd: UpdateDelivery): Result {
   const d = findDelivery(record, cmd.n);
   if (!d) return refuse("unknown-delivery", `this surface has no delivery ${cmd.n}`);
-  if (cmd.to !== undefined && cmd.to !== d.state && !DELIVERY_TRANSITIONS[d.state].includes(cmd.to)) {
+  if (cmd.messageId !== undefined && cmd.messageId !== d.messageId) {
+    return refuse("bad-delivery-transition", `delivery ${cmd.n} no longer has message id ${cmd.messageId}`);
+  }
+  if (cmd.to !== undefined && cmd.to !== d.state
+    && (!DELIVERY_TRANSITIONS[d.state].includes(cmd.to) || (d.state === "held" && !d.enqueued))) {
     return refuse("bad-delivery-transition", `delivery ${cmd.n} is ${d.state} and cannot become ${cmd.to}`);
   }
   if (cmd.to === "queued" && d.state !== "queued") {
@@ -941,8 +957,7 @@ export interface DeleteDecisions {
 
 /**
  * The user deletes decisions: the answer, the note and each item's verdict and
- * comment go from the record, and the frozen text of a delivery goes once
- * every question it carried is deleted.
+ * comment go from the record, as does frozen delivery text carrying the deleted content.
  */
 function deleteDecisions(record: SurfaceRecord, cmd: DeleteDecisions): Result {
   const all = cmd.questions === undefined;
@@ -971,23 +986,35 @@ function deleteDecisions(record: SurfaceRecord, cmd: DeleteDecisions): Result {
     }
     return out;
   };
-  // The rule: a delivery still in the daemon's queue (queued, uncertain) cannot be recalled, so it
-  // refuses; a held, failed or removed one is cancelled only when everything it carries is being
-  // deleted (no comment, no skipped target, no other answer). Otherwise the delete is refused.
-  const blocked = (id: string): boolean => {
+  const sentComment = (d: Delivery, on: string): CommentRecord | undefined => {
+    const current = own(record.comments, on);
+    return own(d.sentComments ?? {}, on) ?? (current?.delivery === d.n ? current : undefined);
+  };
+  // Accepted enqueues can still settle after archive. Cancel other pending deliveries
+  // only when their entire payload is being deleted, and keep legacy comment history.
+  const blocked = (id: string): RefusalCode | undefined => {
     const dead = doomed();
-    return carries(id).some((n) => {
+    for (const n of carries(id)) {
       const d = findDelivery(record, n);
-      if (!d || d.state === "delivered" || d.text === "") return false;
-      if (d.state === "queued" || d.state === "uncertain") return true;
-      return d.comments.length > 0 || d.targets.some((t) => !dead.has(t));
-    });
+      if (!d || d.text === "") continue;
+      if (d.state === "delivered") {
+        if (d.comments.some((on) => !sentComment(d, on))) return "comment-history-unavailable";
+        continue;
+      }
+      if (d.state === "queued" || d.state === "uncertain" || (d.state === "held" && d.enqueued)
+        || d.comments.length > 0 || d.targets.some((t) => !dead.has(t))) return "delivery-pending";
+    }
+    return undefined;
   };
   for (let again = true; again; ) {
     again = false;
     for (const id of Object.keys(cand)) {
-      if (!blocked(id)) continue;
-      if (!all) return refuse("delivery-pending", `${JSON.stringify(id)} is in a delivery that is still queued; delete it once it is delivered`);
+      const code = blocked(id);
+      if (!code) continue;
+      if (!all) {
+        const reason = code === "comment-history-unavailable" ? "redaction would erase its delivery's only copy of a sent comment" : "its pending delivery cannot be cancelled";
+        return refuse(code, `cannot delete ${JSON.stringify(id)}: ${reason}`);
+      }
       delete cand[id];
       again = true;
     }
@@ -997,6 +1024,7 @@ function deleteDecisions(record: SurfaceRecord, cmd: DeleteDecisions): Result {
   const questions = { ...record.questions };
   for (const id of gone) {
     const q = record.questions[id];
+    const label = docQuestion(record, id)?.label ?? (q.label === q.prompt ? "" : q.label);
     if (q.items) {
       const items: Record<string, ItemRecord> = {};
       for (const itemId of Object.keys(q.items)) {
@@ -1010,11 +1038,16 @@ function deleteDecisions(record: SurfaceRecord, cmd: DeleteDecisions): Result {
       }
       const state = reviewState(items);
       // A review with items still open stays answerable; one that is settled is deleted whole.
-      questions[id] = state === "open" ? { ...q, items } : { kind: q.kind, label: q.label, prompt: "", state, deleted: true, ...(q.delivery !== undefined ? { delivery: q.delivery } : {}) };
+      questions[id] = state === "open" ? { ...q, items } : { kind: q.kind, label, prompt: "", state, deleted: true, ...(q.delivery !== undefined ? { delivery: q.delivery } : {}) };
     } else {
-      questions[id] = { kind: q.kind, label: q.label, prompt: "", state: q.state, deleted: true, ...(q.delivery !== undefined ? { delivery: q.delivery } : {}) };
+      questions[id] = { kind: q.kind, label, prompt: "", state: q.state, deleted: true, ...(q.delivery !== undefined ? { delivery: q.delivery } : {}) };
     }
   }
+  const document = record.document?.questions
+    ? { ...record.document, questions: record.document.questions.map((q) =>
+      gone.includes(q.id) && questions[q.id].deleted ? { ...q, prompt: "" } : q
+    ) }
+    : record.document;
   // A delivery's text is a copy of every answer it carried: it goes when any of them is deleted.
   // One that was never delivered is cancelled with it (state removed), so Retry cannot resend nothing.
   const dead = doomed();
@@ -1023,6 +1056,13 @@ function deleteDecisions(record: SurfaceRecord, cmd: DeleteDecisions): Result {
     const touched = d.targets.some((t) => dead.has(t));
     if (!touched) return d;
     const next: Delivery = { ...d, text: "" };
+    if (d.comments.length) {
+      next.sentComments = { ...d.sentComments };
+      for (const on of d.comments) {
+        const comment = sentComment(d, on);
+        if (comment) next.sentComments[on] = comment;
+      }
+    }
     delete next.receivedText;
     delete next.lastError;
     if (d.state !== "delivered") {
@@ -1031,7 +1071,7 @@ function deleteDecisions(record: SurfaceRecord, cmd: DeleteDecisions): Result {
     }
     return next;
   });
-  return done(bump(record, { questions, deliveries }));
+  return done(bump(record, { document, questions, deliveries }));
 }
 
 export interface Compact {

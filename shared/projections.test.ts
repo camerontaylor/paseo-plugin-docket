@@ -99,6 +99,14 @@ describe("decisions", () => {
     expect(searchDecisions(all, { limit: 1 })).toHaveLength(1);
   });
 
+  it("compares offset timestamps against inclusive since and exclusive until bounds", () => {
+    const decisions = decisionsOf(answer(build(), "2026-11-02T00:00:00.000Z"));
+    const same = "2026-11-02T11:00:00+11:00";
+    expect(searchDecisions(decisions, { since: same })).toEqual(decisions);
+    expect(searchDecisions(decisions, { until: same })).toEqual([]);
+    expect(searchDecisions(decisions, { until: "2026-11-01T19:01:00-05:00" })).toEqual(decisions);
+  });
+
   it("drops deleted decisions, and says when nothing is left", () => {
     const r = run(answer(build(), "2026-11-02T00:00:00.000Z"), { kind: "updateDelivery", n: 1, to: "delivered", now: "2026-11-02T00:00:00.000Z" });
     expect(allDecisionsDeleted(r)).toBe(false);

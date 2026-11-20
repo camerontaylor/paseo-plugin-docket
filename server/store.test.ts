@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type SurfaceDocument, LIMITS } from "../shared";
 import { type CrashPoint, type Store, InjectedCrash, defaultStoreRoot, openStore } from "./store";
 
@@ -70,6 +70,21 @@ describe("create and files", () => {
     expect((await fs.readdir(path.join(dir, "surfaces", record.id))).filter((n) => n.endsWith(".tmp"))).toEqual([]);
     expect(JSON.parse(await fs.readFile(file, "utf8")).id).toBe(record.id);
     expect(store.get(record.id)).toBe(record);
+  });
+
+  it("removes the temporary file when a write cannot be renamed", async () => {
+    const store = await open();
+    const { record } = must(await store.create({ agentId: "ag1", document: DOC }));
+    const error = Object.assign(new Error("rename failed"), { code: "EIO" });
+    const spy = vi.spyOn(fs, "rename").mockRejectedValueOnce(error);
+    try {
+      await expect(store.apply(record.id, { kind: "close", now: new Date(clock).toISOString() })).rejects.toBe(error);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(store.get(record.id)).toBe(record);
+    expect(await fs.readdir(path.join(dir, "surfaces", record.id))).toEqual(["record.json"]);
+    expect((await open()).get(record.id)).toEqual(record);
   });
 
   it("raises rev on every write, reads back after a reopen, and skips the write for a no-op", async () => {
@@ -289,6 +304,55 @@ describe("start scan", () => {
     expect(store.unreadable).toEqual([]);
   });
 
+  it("reports record read errors and preserves the evidence and reserved id", async () => {
+    const first = await open();
+    const { record } = must(await first.create({ agentId: "ag1", document: DOC, evidence: { "x.txt": "keep" } }));
+    const file = path.join(dir, "surfaces", record.id, "record.json");
+    const readFile = fs.readFile.bind(fs);
+    const spy = vi.spyOn(fs, "readFile").mockImplementation(async (target, options) => {
+      if (target === file) throw Object.assign(new Error("read failed"), { code: "EIO" });
+      return readFile(target, options);
+    });
+    try {
+      seq = 1;
+      const restarted = await open();
+      expect(restarted.unreadable).toEqual([{ surfaceId: record.id, file, reason: "read failed (EIO)" }]);
+      const next = must(await restarted.create({ agentId: "ag2", document: DOC }));
+      expect(next.record.id).not.toBe(record.id);
+    } finally {
+      spy.mockRestore();
+    }
+    expect((await open()).get(record.id)).toEqual(record);
+    await expect(fs.readFile(path.join(dir, "evidence", record.id, "x.txt"), "utf8")).resolves.toBe("keep");
+  });
+
+  it.each([
+    ["missing compaction marker", { compactedAt: undefined }],
+    ["invalid question entry", { questions: { queue: null } }],
+  ])("preserves evidence for a record with %s", async (_name, fields) => {
+    const first = await open();
+    const { record } = must(await first.create({ agentId: "ag1", document: DOC, evidence: { "x.txt": "keep" } }));
+    const file = path.join(dir, "surfaces", record.id, "record.json");
+    await fs.writeFile(file, JSON.stringify({ ...record, ...fields }));
+    const restarted = await open();
+    expect(restarted.get(record.id)).toBeUndefined();
+    expect(restarted.unreadable).toEqual([{ surfaceId: record.id, file, reason: "not a valid record" }]);
+    await expect(fs.readFile(path.join(dir, "evidence", record.id, "x.txt"), "utf8")).resolves.toBe("keep");
+  });
+
+  it("aborts startup before sweeping evidence when the surfaces directory cannot be listed", async () => {
+    const first = await open();
+    const { record } = must(await first.create({ agentId: "ag1", document: DOC, evidence: { "x.txt": "keep" } }));
+    const error = Object.assign(new Error("directory read failed"), { code: "EIO" });
+    const spy = vi.spyOn(fs, "readdir").mockRejectedValueOnce(error);
+    try {
+      await expect(open()).rejects.toBe(error);
+    } finally {
+      spy.mockRestore();
+    }
+    await expect(fs.readFile(path.join(dir, "evidence", record.id, "x.txt"), "utf8")).resolves.toBe("keep");
+  });
+
   it("tightens modes on an existing store", async () => {
     await fs.mkdir(path.join(dir, "surfaces"), { recursive: true, mode: 0o755 });
     await fs.chmod(path.join(dir, "surfaces"), 0o755);
@@ -475,7 +539,9 @@ describe("review findings on PR 5", () => {
     must(await store.apply(id, { kind: "setDraft", target: "queue", draft: { value: "bullmq", note: "delete this note" }, baseVersion: 0, now: at }));
     must(await store.apply(id, { kind: "setComment", on: "plan.step", text: "keep this comment", baseVersion: 0, now: at }));
     must(await store.apply(id, { kind: "send", targets: [{ target: "queue", version: 1 }], comments: [{ on: "plan.step", version: 1 }], now: at }));
-    must(await store.apply(id, { kind: "updateDelivery", n: 1, to: "delivered", now: at, receivedText: "delete this note" }));
+    const observedText = "rewritten: delete this note";
+    must(await store.apply(id, { kind: "updateDelivery", n: 1, to: "delivered", now: at, patch: { receivedText: observedText } }));
+    expect(store.get(id)?.deliveries[0].receivedText).toBe(observedText);
     const comment = store.get(id)?.comments["plan.step"];
 
     must(await store.deleteDecision(id, "queue"));
@@ -486,6 +552,38 @@ describe("review findings on PR 5", () => {
     expect(reopened.decisions()).toEqual([]);
     expect(await fs.readFile(path.join(dir, "surfaces", id, "record.json"), "utf8")).not.toContain("delete this note");
     await expect(fs.readFile(path.join(dir, "evidence", id, "x.txt"), "utf8")).resolves.toBe("e");
+  });
+
+  it("removes the surface and evidence when only a cleared comment remains", async () => {
+    const store = await open();
+    const at = new Date(clock).toISOString();
+    const { record } = must(await store.create({
+      agentId: "ag1",
+      document: { ...DOC, view: [{ t: "plan", steps: [{ id: "step", title: "Set up the queue" }] }] },
+      evidence: { "x.txt": "e" },
+    }));
+    const id = record.id;
+    must(await store.apply(id, { kind: "setComment", on: "plan.step", text: "draft", baseVersion: 0, now: at }));
+    must(await store.apply(id, { kind: "setComment", on: "plan.step", text: null, baseVersion: 1, now: at }));
+    await answered(store, id);
+    must(await store.deleteDecision(id, "queue"));
+    expect((await open()).get(id)).toBeUndefined();
+    await expect(fs.stat(path.join(dir, "evidence", id))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("counts a decision from a send already queued on the same surface lock", async () => {
+    const store = await open();
+    const { record } = must(await store.create({ agentId: "ag1", document: DOC }));
+    const id = record.id;
+    const now = new Date(clock).toISOString();
+    must(await store.apply(id, { kind: "setDraft", target: "queue", draft: { value: "bullmq" }, baseVersion: 0, now }));
+    const send = store.apply(id, { kind: "send", targets: [{ target: "queue", version: 1 }], now });
+    const delivered = store.apply(id, { kind: "updateDelivery", n: 1, to: "delivered", now });
+    const deleted = store.deleteAgentDecisions("ag1");
+    must(await send);
+    must(await delivered);
+    expect(await deleted).toBe(1);
+    expect(store.decisions()).toEqual([]);
   });
 
   it("keeps the record while a delivery is pending after its last decision is deleted, then removes it once delivered", async () => {

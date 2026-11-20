@@ -114,6 +114,8 @@ export interface Delivery {
   /** The question or review-item targets and comment addresses this delivery carried. */
   targets: string[];
   comments: string[];
+  /** Frozen comments by address, independent of later comment edits. */
+  sentComments?: Record<string, CommentRecord>;
   /** True once the daemon's queue accepted the item (plan S5: a delivery without it was never sent). */
   enqueued?: boolean;
   deliveredAt?: string;
@@ -206,7 +208,9 @@ export function draftIsEmpty(draft: Draft): boolean {
 export function isRecordV1(value: unknown): value is SurfaceRecord {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const r = value as Record<string, unknown>;
-  const obj = (v: unknown): boolean => typeof v === "object" && v !== null && !Array.isArray(v);
+  const obj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  const state = (v: unknown): boolean => v === "open" || v === "answered" || v === "skipped" || v === "closed";
+  const nullableString = (v: unknown): boolean => v === null || typeof v === "string";
   return (
     r.schema === 1 &&
     typeof r.id === "string" &&
@@ -214,7 +218,20 @@ export function isRecordV1(value: unknown): value is SurfaceRecord {
     typeof r.agentId === "string" &&
     typeof r.createdAt === "string" &&
     typeof r.summary === "string" &&
+    nullableString(r.revises) &&
+    nullableString(r.replacedBy) &&
+    nullableString(r.orphanedAt) &&
+    nullableString(r.resolvedAt) &&
+    (r.compactedAt === null || (typeof r.compactedAt === "string" && Number.isFinite(Date.parse(r.compactedAt)) && r.document === null)) &&
+    (r.document === null || obj(r.document)) &&
     obj(r.questions) &&
+    Object.values(r.questions).every((q) =>
+      obj(q) && (q.kind === "choice" || q.kind === "text" || q.kind === "review")
+      && typeof q.label === "string" && typeof q.prompt === "string" && state(q.state)
+      && (q.items === undefined || (obj(q.items) && Object.values(q.items).every((item) =>
+        obj(item) && typeof item.title === "string" && state(item.state)
+      )))
+    ) &&
     obj(r.drafts) &&
     obj(r.comments) &&
     obj(r.blockItems) &&

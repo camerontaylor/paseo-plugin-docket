@@ -165,16 +165,23 @@ export async function openStore(options: StoreOptions = {}): Promise<Store> {
   async function writeFileAtomic(file: string, data: string, surfaceId: string): Promise<void> {
     await ensureDir(path.dirname(file));
     const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-    const handle = await fs.open(tmp, "w", FILE_MODE);
+    const handle = await fs.open(tmp, "wx", FILE_MODE);
     try {
-      await handle.writeFile(data, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
+      try {
+        await handle.writeFile(data, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await fs.chmod(tmp, FILE_MODE);
+      crashAt("write:tmp-written", surfaceId);
+      await fs.rename(tmp, file);
+    } catch (error) {
+      if (!(error instanceof InjectedCrash)) {
+        await fs.rm(tmp, { force: true }).catch(() => undefined);
+      }
+      throw error;
     }
-    await fs.chmod(tmp, FILE_MODE);
-    crashAt("write:tmp-written", surfaceId);
-    await fs.rename(tmp, file);
   }
 
   async function persist(record: SurfaceRecord): Promise<void> {
@@ -206,12 +213,7 @@ export async function openStore(options: StoreOptions = {}): Promise<Store> {
     await ensureDir(root);
     await ensureDir(surfacesDir);
     await ensureDir(evidenceDir);
-    let ids: string[] = [];
-    try {
-      ids = await fs.readdir(surfacesDir);
-    } catch {
-      ids = [];
-    }
+    const ids = await fs.readdir(surfacesDir);
     for (const id of ids) {
       const dir = path.join(surfacesDir, id);
       await sweepTemp(dir);
@@ -219,8 +221,10 @@ export async function openStore(options: StoreOptions = {}): Promise<Store> {
       let raw: string;
       try {
         raw = await fs.readFile(file, "utf8");
-      } catch {
-        continue; // a directory with no record: a create that died before its rename
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT") unreadable.push({ surfaceId: id, file, reason: code ? `read failed (${code})` : "read failed" });
+        continue;
       }
       let parsed: unknown;
       try {
@@ -326,26 +330,29 @@ export async function openStore(options: StoreOptions = {}): Promise<Store> {
   function removable(record: SurfaceRecord): boolean {
     return allDecisionsDeleted(record)
       && !hasOpenQuestion(record)
-      && Object.keys(record.comments).length === 0
+      && !Object.values(record.comments).some((c) => c.text !== "" || c.delivery !== null)
+      && !record.deliveries.some((d) => d.comments.length > 0)
       && record.deliveries.every((d) => d.state === "delivered" || d.text === "");
   }
 
-  function apply(id: string, command: Command): Promise<StoreResult> {
-    return locked(id, async () => {
-      const record = records.get(id);
-      if (!record) {
-        return { ok: false as const, refusal: { code: "unknown-target" as const, message: `there is no surface ${id}` } };
-      }
-      const result = applyCommand(record, command);
-      if (!result.ok) return result;
-      if (result.record === record) return result;
-      if ((command.kind === "deleteDecisions" || command.kind === "updateDelivery") && removable(result.record)) {
-        await removeRecord(record);
-        return result;
-      }
-      await persist(result.record);
+  // Callers hold the surface lock across the transition and any related reads.
+  async function applyLocked(id: string, command: Command): Promise<StoreResult> {
+    const record = records.get(id);
+    if (!record) {
+      return { ok: false, refusal: { code: "unknown-target", message: `there is no surface ${id}` } };
+    }
+    const result = applyCommand(record, command);
+    if (!result.ok) return result;
+    if ((command.kind === "deleteDecisions" || command.kind === "updateDelivery") && removable(result.record)) {
+      await removeRecord(record);
       return result;
-    });
+    }
+    if (result.record !== record) await persist(result.record);
+    return result;
+  }
+
+  function apply(id: string, command: Command): Promise<StoreResult> {
+    return locked(id, () => applyLocked(id, command));
   }
 
   function listRecords(filter: { agentId?: string; workspaceId?: string } = {}): SurfaceRecord[] {
@@ -373,12 +380,15 @@ export async function openStore(options: StoreOptions = {}): Promise<Store> {
 
   async function deleteAgentDecisions(agentId: string): Promise<number> {
     let count = 0;
-    for (const record of listRecords({ agentId })) {
-      const before = decisionsOf(record).length;
-      if (!before) continue;
-      const result = await apply(record.id, { kind: "deleteDecisions", now: iso() });
-      const after = records.get(record.id);
-      if (result.ok) count += before - (after ? decisionsOf(after).length : 0);
+    for (const { id } of listRecords({ agentId })) {
+      count += await locked(id, async () => {
+        const record = records.get(id);
+        if (!record) return 0;
+        const before = decisionsOf(record).length;
+        const result = await applyLocked(id, { kind: "deleteDecisions", now: iso() });
+        const after = records.get(id);
+        return result.ok ? before - (after ? decisionsOf(after).length : 0) : 0;
+      });
     }
     return count;
   }

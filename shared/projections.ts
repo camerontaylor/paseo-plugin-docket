@@ -157,16 +157,18 @@ export function decisionText(d: Decision): string {
 /** Newest first. */
 export function searchDecisions(all: Decision[], query: DecisionQuery = {}): Decision[] {
   const words = (query.text ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  const since = query.since === undefined ? -Infinity : Date.parse(query.since);
+  const until = query.until === undefined ? Infinity : Date.parse(query.until);
   const out = all.filter((d) => {
     if (query.agentId !== undefined && d.agentId !== query.agentId) return false;
     if (query.workspaceId !== undefined && d.workspaceId !== query.workspaceId) return false;
-    if (query.since !== undefined && d.at < query.since) return false;
-    if (query.until !== undefined && d.at >= query.until) return false;
+    const at = Date.parse(d.at);
+    if (at < since || at >= until) return false;
     if (!words.length) return true;
     const text = decisionText(d);
     return words.every((w) => text.includes(w));
   });
-  out.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+  out.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
   return query.limit !== undefined ? out.slice(0, query.limit) : out;
 }
 
