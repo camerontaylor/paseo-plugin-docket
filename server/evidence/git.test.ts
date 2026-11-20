@@ -1,10 +1,10 @@
-import { chmodSync, existsSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { LIMITS } from "../../shared/limits";
 import { loadChanges } from "./changes";
 import { readConfinedText } from "./confine";
-import { filterOverrides, runGit } from "./git";
+import { runGit } from "./git";
 import { git, makeRepo, tempDir, write } from "./test-support";
 
 describe("runGit is read-only", () => {
@@ -140,18 +140,41 @@ describe("filters defined in the repository's own config", () => {
     expect((await loadChanges({}, { cwd: dir, git: runGit, readFile: readConfinedText, limits: LIMITS })).ok).toBe(true);
     expect(ran(marks, "inc")).toBe(false);
   });
-  it("fails closed when the filters cannot be listed", async () => {
+  it("fails closed when git is stopped before the diff", async () => {
     const dir = makeRepo();
     const r = await runGit(dir, ["diff", "--name-status"], { maxBytes: 100, signal: AbortSignal.abort() });
     expect(r.ok).toBe(false);
   });
-  it("lists drivers from `config --list` keys", () => {
-    const keys = "core.bare\0filter.x.clean\0filter.x.required\0filter.a.b.smudge\0Filter.Up.process\0filterx.y.clean\0filter.clean\0";
-    expect(filterOverrides(keys).filter((_, i) => i % 2 === 1)).toEqual([
-      "filter.x.clean=", "filter.x.smudge=", "filter.x.process=", "filter.x.required=false",
-      "filter.a.b.clean=", "filter.a.b.smudge=", "filter.a.b.process=", "filter.a.b.required=false",
-      "filter.Up.clean=", "filter.Up.smudge=", "filter.Up.process=", "filter.Up.required=false",
-    ]);
-    expect(filterOverrides("")).toEqual([]);
+  it("a filter written to the config at any moment during loading never runs", async () => {
+    const dir = makeRepo({ "a.txt": "1\n" });
+    const marks = tempDir("docket-marks-");
+    const p = write(marks, "late.sh", `#!/bin/sh\ntouch "${marks}/late.ran"\ncat\n`);
+    chmodSync(p, 0o755);
+    write(dir, "a.txt", "2\n");
+    // the writer strikes right before every git call, including the one that runs the diff
+    const racing: typeof runGit = async (cwd, args, options) => {
+      git(dir, "config", "filter.late.clean", p);
+      write(dir, ".git/info/attributes", "*.txt filter=late\n");
+      return runGit(cwd, args, options);
+    };
+    const r = await loadChanges({}, { cwd: dir, git: racing, readFile: readConfinedText, limits: LIMITS });
+    expect(r.ok && r.files.map((f) => f.path)).toEqual(["a.txt"]);
+    expect(ran(marks, "late")).toBe(false);
+  });
+  it("works from a subdirectory and leaves the real index and temp area clean", async () => {
+    const dir = makeRepo({ "sub/a.txt": "1\n" });
+    write(dir, "sub/a.txt", "2\n");
+    const before = readFileSync(path.join(dir, ".git/index"));
+    const r = await runGit(path.join(dir, "sub"), ["diff", "--name-only", "--relative"], { maxBytes: 1000 });
+    expect(r).toMatchObject({ ok: true, stdout: "a.txt\n" });
+    expect(readFileSync(path.join(dir, ".git/index")).equals(before)).toBe(true);
+  });
+  it("diffs a repository with no commit yet", async () => {
+    const dir = tempDir("docket-unborn-");
+    git(dir, "init", "-q");
+    write(dir, "a.txt", "1\n");
+    git(dir, "add", "a.txt");
+    const r = await runGit(dir, ["diff", "--cached", "--name-only"], { maxBytes: 1000 });
+    expect(r.ok).toBe(true);
   });
 });

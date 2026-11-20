@@ -218,3 +218,11 @@ describe("git output", () => {
     expect(capChanges(many.slice(0, 1), { changesFiles: 0 }).notes[0]).toMatch(/1 more changed file not shown/);
   });
 });
+
+describe("refExcerpt: the line asked for must exist", () => {
+  it("refuses a single line past the end even when context would reach back into the file", () => {
+    const two = "a\nb\n";
+    for (const n of [3, 4, 5, 6]) expect(refExcerpt(two, n, n).ok, `line ${n}`).toBe(false);
+    expect(refExcerpt(two, 2, 2)).toMatchObject({ ok: true, from: 1, to: 2 });
+  });
+});

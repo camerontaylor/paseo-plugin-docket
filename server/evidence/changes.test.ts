@@ -1,4 +1,4 @@
-import { existsSync, symlinkSync } from "node:fs";
+import { existsSync, rmSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { LIMITS } from "../../shared/limits";
@@ -246,5 +246,40 @@ describe("loadChanges: refusals", () => {
     ac.abort();
     const r = await loadChanges({}, { ...ctx(dir), signal: ac.signal });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe("loadChanges: sections and totals", () => {
+  it("keeps every file's patch when one file changes kind (file to link) and another is edited", async () => {
+    const dir = makeRepo({ "a.txt": "1\n2\n3\n", "b.txt": "x\n", "c.txt": "p\nq\n" });
+    write(dir, "a.txt", "1\n2 edited\n3\n");
+    rmSync(path.join(dir, "b.txt"));
+    symlinkSync("a.txt", path.join(dir, "b.txt"));
+    write(dir, "c.txt", "p\nq\nr\n");
+    const r = await loadChanges({}, ctx(dir));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.content).toContain("2 edited");
+    expect(r.content).toContain("+r");
+    expect(r.files.find((f) => f.path === "a.txt")?.hunks?.length).toBe(1);
+    expect(r.files.find((f) => f.path === "c.txt")?.hunks?.length).toBe(1);
+  });
+  it("stops as soon as untracked patches add up past the limit, naming the narrowing", async () => {
+    const dir = makeRepo();
+    for (let i = 0; i < 8; i++) write(dir, `u${i}.txt`, `${"line\n".repeat(150)}`);
+    const r = await loadChanges({}, ctx(dir, { loadedFileBytes: 2000 }));
+    expect(r).toMatchObject({ ok: false, reason: "too-large" });
+  });
+  it("works in a SHA-256 repository, including a first commit", async () => {
+    const dir = tempDir("docket-sha256-");
+    git(dir, "init", "-q", "-b", "main", "--object-format=sha256");
+    write(dir, "a.txt", "1\n");
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "first");
+    write(dir, "a.txt", "2\n");
+    const first = await loadChanges({}, ctx(dir));
+    expect(first.ok && first.files.map((f) => f.path)).toEqual(["a.txt"]);
+    const root = await loadChanges({ of: "HEAD" }, ctx(dir));
+    expect(root.ok && root.files.map((f) => f.path)).toEqual(["a.txt"]);
   });
 });

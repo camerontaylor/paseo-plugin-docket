@@ -21,7 +21,7 @@ import {
 import { LIMITS } from "../../shared/limits";
 import type { ChangeFile } from "../../shared/text";
 import { type FileReader, sha256 } from "./confine";
-import { EMPTY_TREE, type GitRunner } from "./git";
+import { emptyTreeFor, type GitRunner } from "./git";
 
 export type ChangesFailure = "not-git" | "no-git" | "git-failed" | "bad-input" | "unknown-commit" | "too-large" | "timeout";
 
@@ -89,6 +89,8 @@ export async function loadChanges(input: { of?: string; paths?: string[] }, ctx:
 
   // What to compare, and which commit the snapshot is "of".
   let diffTargets: string[];
+  const format = await run(["rev-parse", "--show-object-format"], 1024);
+  const EMPTY_TREE = emptyTreeFor(format.ok ? format.stdout.trim() : "sha1");
   let commit: string | undefined;
   let worktree = false;
   if (of === "worktree") {
@@ -143,22 +145,35 @@ export async function loadChanges(input: { of?: string; paths?: string[] }, ctx:
   const notesOut = [...notes];
 
   // Tracked files: one patch for the kept ones; its pieces follow the same order as the list.
+  let patchBytes = 0;
   const keptTracked = held.filter((h) => h.tracked);
   if (keptTracked.length > 0) {
     const order = tracked.filter((t) => keptTracked.some((h) => h.path === t.path));
     const specs = order.flatMap((t) => (t.oldPath ? [t.oldPath, t.path] : [t.path]));
     const patch = await ran(["-U3"], specs);
     if (!patch.ok) return gitFailure(patch, "the diff is over the size limit; narrow it with `paths`");
-    const pieces = splitPatch(patch.stdout);
-    if (pieces.length === order.length) {
-      order.forEach((t, i) => {
-        const h = keptTracked.find((k) => k.path === t.path)!;
-        h.patch = pieces[i];
-        h.hunks = hunkHeaders(pieces[i]);
-      });
-    } else {
-      notesOut.push("the diff could not be split by file, so hunks are not listed");
+    // A file that changes kind (regular file to link) comes out as two sections under one name, so
+    // sections are matched to files by their `diff --git` header, never by position.
+    const byHeader = new Map<string, Held>();
+    for (const t of order) {
+      const h = keptTracked.find((k) => k.path === t.path)!;
+      byHeader.set(`diff --git a/${t.oldPath ?? t.path} b/${t.path}`, h);
     }
+    let unmatched = 0;
+    for (const piece of splitPatch(patch.stdout)) {
+      const h = byHeader.get(piece.slice(0, piece.indexOf("\n") < 0 ? piece.length : piece.indexOf("\n")));
+      if (!h) {
+        unmatched++;
+        continue;
+      }
+      h.patch += piece;
+      h.hunks = [...h.hunks, ...hunkHeaders(piece)];
+    }
+    if (unmatched > 0) notesOut.push(`${unmatched} section${unmatched === 1 ? "" : "s"} of the diff could not be matched to a file, so ${unmatched === 1 ? "it is" : "they are"} not shown`);
+    let heldBytes = 0;
+    for (const h of keptTracked) heldBytes += h.patch.length;
+    patchBytes += heldBytes;
+    if (patchBytes > limits.loadedFileBytes) return fail("too-large", `${itemSizeProblem("the diff", patchBytes, limits)}; narrow it with \`paths\``);
   }
 
   // Untracked files are new to git: shown as added, read like any other file but never through a link.
@@ -179,6 +194,10 @@ export async function loadChanges(input: { of?: string; paths?: string[] }, ctx:
     h.patch = addedFilePatch(h.path, read.text, (info.mode & 0o111) !== 0);
     h.added = splitLines(read.text).length;
     h.hunks = hunkHeaders(h.patch);
+    // Stop as soon as the snapshot cannot fit, instead of holding hundreds of MiB first.
+    patchBytes += h.patch.length;
+    const over = itemSizeProblem("the diff", patchBytes, limits);
+    if (over) return fail("too-large", `${over}; narrow it with \`paths\``);
   }
 
   const built = buildChanges(held, limits);

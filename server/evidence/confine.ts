@@ -69,7 +69,9 @@ function code(cause: unknown): string | undefined {
  * Whether the open descriptor is a file under a permitted folder. On Linux the kernel names it in
  * /proc/self/fd/<n>, which no later swap of a directory can change. Elsewhere, the descriptor must
  * be the same file (device and inode) that the resolved path names now, and that path must still
- * resolve to itself.
+ * resolve to itself. That fallback is weaker: it checks two paths after the open, so it narrows the
+ * window for a parent-directory swap but does not close it (node has no portable way to ask a
+ * descriptor for its path). Only Linux is race-safe against a writer inside the workspace.
  */
 async function descriptorInside(handle: FileHandle, realRoots: readonly string[], real: string): Promise<boolean> {
   try {
@@ -128,18 +130,22 @@ export const readConfinedText: FileReader = async (requested, options) => {
     if (info.size > options.maxBytes) {
       return failure("too-large", `${info.size} bytes is over the ${options.maxBytes}-byte limit for one loaded file`);
     }
-    const buffer = Buffer.allocUnsafe(Math.min(options.maxBytes, info.size) + 1);
+    // Read to end of file or one byte past the limit, whatever the size was when we looked: a file
+    // that grows while it is read must not come back silently cut.
+    const chunks: Buffer[] = [];
     let filled = 0;
-    while (filled < buffer.length) {
+    while (filled <= options.maxBytes) {
       if (options.signal?.aborted) return failure("error", "reading was cancelled");
-      const { bytesRead } = await handle.read(buffer, filled, buffer.length - filled, filled);
+      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, options.maxBytes + 1 - filled));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, filled);
       if (bytesRead === 0) break;
+      chunks.push(chunk.subarray(0, bytesRead));
       filled += bytesRead;
     }
     if (filled > options.maxBytes) {
       return failure("too-large", `the file grew past the ${options.maxBytes}-byte limit while it was read`);
     }
-    const bytes = buffer.subarray(0, filled);
+    const bytes = Buffer.concat(chunks, filled);
     if (bytes.subarray(0, 8000).includes(0)) return failure("binary", "not a text file");
     return { ok: true, text: bytes.toString("utf8"), bytes: filled, hash: sha256(bytes), realPath: real };
   } catch (cause) {

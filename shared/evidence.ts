@@ -117,7 +117,12 @@ export function refExcerpt(
   limits: Pick<EvidenceLimits, "excerptLines" | "refContextLines"> = LIMITS,
 ): ExcerptResult {
   const lines = splitLines(text);
-  if (from === to) return cut(lines, Math.max(1, from - limits.refContextLines), from + limits.refContextLines);
+  // The line asked for must exist before context is added around it.
+  if (from === to) {
+    const total = lines.length;
+    if (total > 0 && from > total) return cut(lines, from, from);
+    return cut(lines, Math.max(1, from - limits.refContextLines), from + limits.refContextLines);
+  }
   return cut(lines, from, Math.min(to, from + limits.excerptLines - 1));
 }
 
