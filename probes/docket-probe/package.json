@@ -1,0 +1,11 @@
+{
+  "name": "docket-probe",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Throwaway Docket stage-1 probe plugin (P1 + P2). Not published.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "summarize": "node scripts/summarize.mjs"
+  }
+}

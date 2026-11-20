@@ -1,0 +1,8 @@
+{
+  "id": "docket-probe",
+  "name": "Docket probe",
+  "description": "Throwaway probe for Docket stage 1 (P1 two-host hub, P2 tool-call anchor). Writes report.jsonl; shows nothing useful on screen.",
+  "requirements": {
+    "paseo": ">=0.16.0-beta.2"
+  }
+}
