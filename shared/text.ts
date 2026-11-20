@@ -43,6 +43,7 @@ function planLines(steps: PlanStep[], indent: string, out: string[]): void {
     if (step.files !== undefined) parts.push("files " + (Array.isArray(step.files) ? step.files : [step.files]).join(", "));
     if (step.after && step.after.length) parts.push("after " + step.after.join(", "));
     out.push(indent + parts.join("  "));
+    if (step.detail) out.push(indent + "  " + step.detail.split("\n").join("\n" + indent + "  "));
     if (step.children) planLines(step.children, indent + "  ", out);
   }
 }
@@ -62,7 +63,7 @@ function blockText(block: Block, ctx: RenderContext): string {
   } else if (block.t === "code") {
     if (block.file) out.push("  " + codeRange(block.file, block.from, block.to));
     const body = block.s ?? ctx.code?.[id];
-    if (body !== undefined) out.push("```" + (block.lang ?? ""), body.replace(/\n$/, ""), "```");
+    if (body !== undefined) out.push("```" + (block.lang ?? (block.diff ? "diff" : "")), body.replace(/\n$/, ""), "```");
   } else {
     out.push("  " + (block.of ?? "worktree") + (block.paths?.length ? "  " + block.paths.join(", ") : ""));
     const files = ctx.changes?.[id];
@@ -107,7 +108,12 @@ function questionText(q: Question, number: number): string {
       rec = `  (recommended: ${Object.keys(q.recommend).map((k) => `${k} ${(q.recommend as Record<string, string>)[k]}`).join(", ")})`;
     }
     out.push(`${number}. ${q.id}: ${q.prompt}, per item: ${verdicts}${rec}`);
-    if (q.items) for (const item of reviewItems(q as ReviewQuestion)) out.push(`   ${item.id}  ${item.title}`);
+    if (q.items) {
+      for (const item of reviewItems(q as ReviewQuestion)) {
+        out.push(`   ${item.id}  ${item.title}${item.ref ? "  " + item.ref : ""}`);
+        if (item.detail) out.push("      " + item.detail.split("\n").join("\n      "));
+      }
+    }
   }
   return out.join("\n");
 }

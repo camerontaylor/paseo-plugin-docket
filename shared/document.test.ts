@@ -341,3 +341,13 @@ describe("selection bounds and nesting depth", () => {
     expect(validateDocument(doc).problems).toEqual([]);
   });
 });
+
+describe("deeply nested plan supplied as a JSON string", () => {
+  it("is refused through the normal result, not a stack overflow", () => {
+    let step = '{"id":"z","title":"Z"}';
+    for (let i = 0; i < 5000; i++) step = `{"id":"n","title":"N","children":[${step}]}`;
+    const text = JSON.stringify({ v: 1, summary: "S", view: [{ t: "plan", steps: [{ id: "a", title: "A" }] }] }).replace('{"id":"a","title":"A"}', step);
+    const r = acceptDocument(text);
+    expect(r.ok).toBe(false);
+  });
+});

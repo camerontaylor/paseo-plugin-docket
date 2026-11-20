@@ -146,3 +146,32 @@ Still open: Retries; plan steps s2, s4`;
     expect(itemNoun("other")).toBe("item");
   });
 });
+
+describe("nothing the agent wrote is dropped from the text form", () => {
+  const render = (view: unknown[], questions?: unknown[]): string =>
+    renderText({ v: 1, summary: "S", context: "C", view, questions } as never);
+
+  it("plan step detail, indented under its step", () => {
+    const text = render([{ t: "plan", steps: [{ id: "s1", title: "Remove fallback", detail: "No fallback if worker fails\nsecond line", children: [{ id: "s2", title: "Inner", detail: "deep" }] }] }]);
+    expect(text).toContain("  s1  Remove fallback  [todo]\n    No fallback if worker fails\n    second line\n    s2  Inner  [todo]\n      deep");
+  });
+
+  it("review item detail and ref", () => {
+    const text = render([], [{ id: "r", kind: "review", prompt: "P", items: [{ id: "a", title: "A", detail: "why", ref: "x.ts:3" }] }]);
+    expect(text).toContain("   a  A  x.ts:3\n      why");
+  });
+
+  it("a diff code block is fenced as diff", () => {
+    expect(render([{ t: "code", s: "+a", diff: true }])).toContain("```diff");
+  });
+
+  it("every validated view renders without throwing", () => {
+    const views = [
+      { t: "changes", paths: ["src/", "lib/"] },
+      { t: "changes" },
+      { t: "code", file: "a.ts", from: 3 },
+      { t: "plan", steps: [{ id: "s1", title: "T", files: "a.ts", after: [] }] },
+    ];
+    for (const v of views) expect(() => render([v])).not.toThrow();
+  });
+});

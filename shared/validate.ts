@@ -168,10 +168,10 @@ function checkRef(c: Collector, at: string, value: unknown): void {
   }
 }
 
-function checkPathList(c: Collector, at: string, value: unknown, name: string): void {
-  const list = typeof value === "string" ? [value] : value;
+function checkPathList(c: Collector, at: string, value: unknown, name: string, allowScalar = true): void {
+  const list = typeof value === "string" && allowScalar ? [value] : value;
   if (!Array.isArray(list)) {
-    c.problem(at, `${tick(name)} must be a path or a list of paths`);
+    c.problem(at, `${tick(name)} must be ${allowScalar ? "a path or " : ""}a list of paths`);
     return;
   }
   list.forEach((p, i) => {
@@ -302,7 +302,7 @@ function validateBlock(c: Collector, at: string, block: unknown): BlockInfo | un
   } else {
     checkFields(c, block, at, ["t", "id", "title", "of", "paths"], BLOCK_LATER);
     if (block.of !== undefined) checkChangesOf(c, at + "/of", block.of);
-    if (block.paths !== undefined) checkPathList(c, at + "/paths", block.paths, "paths");
+    if (block.paths !== undefined) checkPathList(c, at + "/paths", block.paths, "paths", false);
     info.itemIds = undefined;
   }
   return info;
