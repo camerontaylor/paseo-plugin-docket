@@ -155,31 +155,32 @@ export async function loadChanges(input: { of?: string; paths?: string[] }, ctx:
   const held: Held[] = kept.map((e) => ({ ...e, hunks: [], patch: "" }));
   const notesOut = [...notes];
 
-  // Tracked files: one patch for the kept ones; its pieces follow the same order as the list.
+  // Tracked files: collect one diff for the kept paths, then assign its sections by header.
   let patchBytes = 0;
-  const keptTracked = held.filter((h) => h.tracked);
-  if (keptTracked.length > 0) {
-    const order = tracked.filter((t) => keptTracked.some((h) => h.path === t.path));
+  const keptTracked = new Map(held.filter((h) => h.tracked).map((h) => [h.path, h]));
+  if (keptTracked.size > 0) {
+    const order = tracked.filter((t) => keptTracked.has(t.path));
     const specs = order.flatMap((t) => (t.oldPath ? [t.oldPath, t.path] : [t.path]));
     const patch = await ran(["-U3"], specs);
     if (!patch.ok) return gitFailure(patch, "the diff is over the size limit; narrow it with `paths`");
     // A file that changes kind (regular file to link) comes out as two sections under one name, so
     // sections are matched to files by their `diff --git` header, never by position.
-    const byHeader = new Map<string, Held>();
-    for (const t of order) {
-      const h = keptTracked.find((k) => k.path === t.path)!;
+    // A kept pathspec can also select descendants omitted by the file cap.
+    const byHeader = new Map<string, Held | null>();
+    for (const t of tracked) {
       const header = "diff --git " + patchPath("a/" + (t.oldPath ?? t.path)) + " " + patchPath("b/" + t.path);
       if (byHeader.has(header)) return fail("git-failed", "multiple changed files have the same patch header");
-      byHeader.set(header, h);
+      byHeader.set(header, keptTracked.get(t.path) ?? null);
     }
     for (const piece of splitPatch(patch.stdout)) {
       const h = byHeader.get(piece.split("\n", 1)[0]);
-      if (!h) return fail("git-failed", "git returned a patch section that could not be matched to a changed file");
+      if (h === undefined) return fail("git-failed", "git returned a patch section that could not be matched to a changed file");
+      if (h === null) continue;
+      patchBytes += Buffer.byteLength(piece);
       h.patch += piece;
       h.hunks = [...h.hunks, ...hunkHeaders(piece)];
     }
-    if (keptTracked.some((h) => h.patch === "")) return fail("git-failed", "git omitted a patch for a changed file");
-    patchBytes = Buffer.byteLength(patch.stdout);
+    if ([...keptTracked.values()].some((h) => h.patch === "")) return fail("git-failed", "git omitted a patch for a changed file");
     if (patchBytes > limits.loadedFileBytes) return fail("too-large", `${itemSizeProblem("the diff", patchBytes, limits)}; narrow it with \`paths\``);
   }
 

@@ -31,9 +31,25 @@ describe("readConfinedText", () => {
     const { ws } = setup();
     const readlink = vi.spyOn(fs, "readlink").mockRejectedValueOnce(new Error("descriptor path unavailable"));
     try {
-      expect(await read(ws, "a.txt")).toMatchObject({ ok: false, reason: "outside" });
+      expect(await read(ws, "a.txt")).toMatchObject({
+        ok: false, reason: "unverifiable", message: "cannot verify the opened file through /proc/self/fd",
+      });
     } finally {
       readlink.mockRestore();
+    }
+  });
+  it("reports the Linux requirement before opening a file on other platforms", async () => {
+    const { ws } = setup();
+    const open = vi.spyOn(fs, "open").mockClear();
+    vi.stubGlobal("process", Object.create(process, { platform: { value: "darwin" } }));
+    try {
+      expect(await read(ws, "a.txt")).toMatchObject({
+        ok: false, reason: "unverifiable", message: expect.stringContaining("requires Linux"),
+      });
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      open.mockRestore();
     }
   });
   it("reads paths with spaces and unicode", async () => {

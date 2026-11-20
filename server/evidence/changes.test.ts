@@ -299,6 +299,42 @@ describe("loadChanges: sections and totals", () => {
     expect(await loadChanges({}, ctx(dir))).toMatchObject({ ok: true, files: [] });
   });
 
+  it.each(["true", "input"])("normalizes CRLF with core.autocrlf=%s", async (setting) => {
+    const dir = makeRepo({ "text.txt": "first\nsecond\n" });
+    git(dir, "config", "core.autocrlf", setting);
+    write(dir, "text.txt", "first\r\nsecond\r\n");
+    expect(git(dir, "diff", "--name-only", "HEAD")).toBe("");
+    expect(await loadChanges({}, ctx(dir))).toMatchObject({ ok: true, files: [] });
+
+    write(dir, "text.txt", "first\r\nchanged\r\n");
+    const result = await loadChanges({}, ctx(dir));
+    expect(result).toMatchObject({ ok: true, files: [{ path: "text.txt", added: 1, removed: 1 }] });
+  });
+
+  it("truncates commit patches when a file and a directory trade places", async () => {
+    const dir = makeRepo({ "section": "previous content\n" });
+    rmSync(path.join(dir, "section"));
+    write(dir, "section/a.txt", "first file\n");
+    write(dir, "section/b.txt", "second file\n");
+    const expanded = commitAll(dir, "expand section");
+    git(dir, "rm", "-qr", "--", "section");
+    write(dir, "section", "replacement content\n");
+    const collapsed = commitAll(dir, "collapse section");
+
+    for (const [commit, parentStatus, childStatus] of [
+      [expanded, "removed", "added"],
+      [collapsed, "added", "removed"],
+    ]) {
+      const result = await loadChanges({ of: commit }, ctx(dir, { changesFiles: 2 }));
+      expect(result).toMatchObject({
+        ok: true,
+        files: [{ path: "section", status: parentStatus }, { path: "section/a.txt", status: childStatus }],
+        notes: [expect.stringContaining("1 more changed file not shown")],
+      });
+      if (result.ok) expect(result.content).not.toContain("section/b.txt");
+    }
+  });
+
   it("works in a SHA-256 repository, including a first commit", async () => {
     const dir = tempDir("docket-sha256-");
     git(dir, "init", "-q", "-b", "main", "--object-format=sha256");

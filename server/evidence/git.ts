@@ -23,7 +23,7 @@
 // .gitattributes makes evidence loading run a program. What is not covered:
 // `rev-parse` and `ls-files` still read the repository's config (their `-c`
 // overrides cover the settings that execute commands). The private config
-// repeats only explicitly selected boolean settings.
+// repeats only validated file metadata and line-ending settings.
 //
 // Needs no particular git version: no `--attr-source` is used, because the private git directory above
 // defines no driver for an attribute to select.
@@ -133,15 +133,38 @@ async function shadowDiff(cwd: string, args: readonly string[], options: GitOpti
     if (typeof head !== "string" && (head.reason !== "failed" || head.stderr !== "")) return head;
 
     let config = `[core]\n\trepositoryformatversion = ${format === "sha256" ? 1 : 0}\n\tbare = false\n`;
-    for (const key of ["filemode", "symlinks", "ignorecase"]) {
-      const value = await exec(cwd, ["config", "--type=bool", "--get", `core.${key}`], { ...options, maxBytes: 1024 });
+    const coreSettings = [
+      { key: "filemode", boolean: true, choices: [] },
+      { key: "symlinks", boolean: true, choices: [] },
+      { key: "ignorecase", boolean: true, choices: [] },
+      { key: "autocrlf", boolean: true, choices: ["input"] },
+      { key: "eol", boolean: false, choices: ["native", "lf", "crlf"] },
+      { key: "safecrlf", boolean: true, choices: ["warn"] },
+    ];
+    for (const { key, boolean, choices } of coreSettings) {
+      const configOptions = { ...options, maxBytes: 1024 };
+      const get = ["--get", "core." + key];
+      if (choices.length > 0) {
+        const raw = await exec(cwd, ["config", ...get], configOptions);
+        if (!raw.ok) {
+          if (raw.reason !== "failed" || raw.stderr !== "") return raw;
+          continue;
+        }
+        const choice = choices.find((candidate) => raw.stdout.toLowerCase() === candidate + "\n");
+        if (choice !== undefined) {
+          config += "\t" + key + " = " + choice + "\n";
+          continue;
+        }
+        if (!boolean) continue;
+      }
+      const value = await exec(cwd, ["config", "--type=bool", ...get], configOptions);
       if (!value.ok) {
-        // An unset key yields no stderr. Git validates values before printing.
+        // An unset key yields no stderr. Git validates booleans before printing.
         if (value.reason !== "failed" || value.stderr !== "") return value;
         continue;
       }
       const normalized = value.stdout.trim();
-      if (normalized === "true" || normalized === "false") config += `\t${key} = ${normalized}\n`;
+      if (normalized === "true" || normalized === "false") config += "\t" + key + " = " + normalized + "\n";
     }
     if (format === "sha256") config += "[extensions]\n\tobjectformat = sha256\n";
 
