@@ -75,6 +75,8 @@ export interface ItemRecord {
   detail?: string;
   answer?: ItemAnswerRecord;
   delivery?: number;
+  /** Set when the user deleted this item's decision; its verdict and comment are gone. */
+  deleted?: true;
 }
 
 export interface QuestionRecord {

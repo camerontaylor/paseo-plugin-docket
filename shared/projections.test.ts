@@ -90,7 +90,7 @@ describe("decisions", () => {
   });
 
   it("drops deleted decisions, and says when nothing is left", () => {
-    const r = answer(build(), "2026-11-02T00:00:00.000Z");
+    const r = run(answer(build(), "2026-11-02T00:00:00.000Z"), { kind: "updateDelivery", n: 1, to: "delivered", now: "2026-11-02T00:00:00.000Z" });
     expect(allDecisionsDeleted(r)).toBe(false);
     const one = run(r, { kind: "deleteDecisions", questions: ["queue"], now: "2026-11-03T00:00:00.000Z" });
     expect(decisionsOf(one).map((d) => d.questionId)).toEqual(["chk"]);

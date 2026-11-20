@@ -318,6 +318,11 @@ export async function openStore(options: StoreOptions = {}): Promise<Store> {
     });
   }
 
+  /** Nothing left worth keeping: every decision deleted, nothing open, nothing awaiting delivery. */
+  function removable(record: SurfaceRecord): boolean {
+    return allDecisionsDeleted(record) && !hasOpenQuestion(record) && record.deliveries.every((d) => d.state === "delivered");
+  }
+
   function apply(id: string, command: Command): Promise<StoreResult> {
     return locked(id, async () => {
       const record = records.get(id);
@@ -327,7 +332,7 @@ export async function openStore(options: StoreOptions = {}): Promise<Store> {
       const result = applyCommand(record, command);
       if (!result.ok) return result;
       if (result.record === record) return result;
-      if (command.kind === "deleteDecisions" && allDecisionsDeleted(result.record) && !hasOpenQuestion(result.record)) {
+      if ((command.kind === "deleteDecisions" || command.kind === "updateDelivery") && removable(result.record)) {
         await removeRecord(record);
         return result;
       }
@@ -365,7 +370,8 @@ export async function openStore(options: StoreOptions = {}): Promise<Store> {
       const before = decisionsOf(record).length;
       if (!before) continue;
       const result = await apply(record.id, { kind: "deleteDecisions", now: iso() });
-      if (result.ok) count += before;
+      const after = records.get(record.id);
+      if (result.ok) count += before - (after ? decisionsOf(after).length : 0);
     }
     return count;
   }

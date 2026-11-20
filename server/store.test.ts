@@ -39,12 +39,13 @@ const crashAt = (point: CrashPoint) => (p: CrashPoint) => {
 };
 const mode = async (p: string): Promise<number> => (await fs.stat(p)).mode & 0o777;
 
-async function answered(store: Store, id: string, targets: string[] = ["queue"]): Promise<void> {
+async function answered(store: Store, id: string, targets: string[] = ["queue"], deliver = true): Promise<void> {
   for (const t of targets) {
     const content = t === "queue" ? { value: "bullmq", note: "cheaper to run" } : t === "name" ? { value: "mailer" } : { verdict: "change", comment: "keep cron" };
     must(await store.apply(id, { kind: "setDraft", target: t, draft: content, baseVersion: 0, now: new Date(clock).toISOString() }));
   }
   must(await store.apply(id, { kind: "send", targets: targets.map((target) => ({ target, version: 1 })), skip: ["name", "chk"].filter((x) => !targets.some((t) => t === x || t.startsWith(x + "."))), now: new Date(clock).toISOString() }));
+  if (deliver) for (const d of store.get(id)!.deliveries) must(await store.apply(id, { kind: "updateDelivery", n: d.n, to: "delivered", now: new Date(clock).toISOString() }));
 }
 
 describe("store root", () => {
@@ -300,7 +301,7 @@ describe("delivery states through the store", () => {
   it("persists delivery changes and Retry", async () => {
     const store = await open();
     const { record } = must(await store.create({ agentId: "ag1", document: DOC }));
-    await answered(store, record.id);
+    await answered(store, record.id, ["queue"], false);
     must(await store.apply(record.id, { kind: "updateDelivery", n: 1, to: "failed", patch: { lastError: "boom" }, now: "2026-11-21T10:01:00.000Z" }));
     must(await store.apply(record.id, { kind: "retryDelivery", n: 1, now: "2026-11-21T10:02:00.000Z" }));
     const again = await open();
@@ -453,5 +454,56 @@ describe("events.jsonl", () => {
     const store = await open({ recordEvents: false });
     await store.recordEvent("surface.created", { surfaceId: "s_1" });
     await expect(fs.stat(path.join(dir, "events.jsonl"))).rejects.toThrow();
+  });
+});
+
+describe("review findings on PR 5", () => {
+  it("keeps the record while a delivery is pending after its last decision is deleted, then removes it once delivered", async () => {
+    const store = await open();
+    const { record } = must(await store.create({ agentId: "ag1", document: DOC, evidence: { "x.txt": "e" } }));
+    await answered(store, record.id, ["queue", "chk.a", "chk.b"], false);
+    // delivery 1 is queued: the deletion is refused, nothing is lost
+    expect((await store.deleteDecision(record.id, "queue")).ok).toBe(false);
+    expect(store.get(record.id)?.deliveries[0].state).toBe("queued");
+    must(await store.apply(record.id, { kind: "updateDelivery", n: 1, to: "delivered", now: new Date(clock).toISOString() }));
+    must(await store.deleteDecision(record.id, "queue"));
+    must(await store.deleteDecision(record.id, "chk"));
+    expect(store.get(record.id)).toBeUndefined();
+  });
+
+  it("keeps a record with a separate pending delivery after every decision is deleted, and removes it when that delivers", async () => {
+    const store = await open();
+    const { record } = must(await store.create({ agentId: "ag1", document: DOC }));
+    const at = () => new Date(clock).toISOString();
+    must(await store.apply(record.id, { kind: "setDraft", target: "queue", draft: { value: "bullmq" }, baseVersion: 0, now: at() }));
+    must(await store.apply(record.id, { kind: "send", targets: [{ target: "queue", version: 1 }], now: at() }));
+    must(await store.apply(record.id, { kind: "updateDelivery", n: 1, to: "delivered", now: at() }));
+    must(await store.apply(record.id, { kind: "send", targets: [], skip: ["name", "chk"], now: at() }));
+    expect(store.get(record.id)?.deliveries[1].state).toBe("queued");
+    must(await store.deleteDecision(record.id, "queue"));
+    expect(store.get(record.id)).toBeDefined();
+    must(await store.apply(record.id, { kind: "updateDelivery", n: 2, to: "delivered", now: at() }));
+    expect(store.get(record.id)).toBeUndefined();
+  });
+
+  it("deleting every decision of an agent skips those whose delivery is pending", async () => {
+    const store = await open();
+    const a = must(await store.create({ agentId: "ag1", document: DOC })).record;
+    await answered(store, a.id, ["queue"], false);
+    expect(await store.deleteAgentDecisions("ag1")).toBe(0);
+    expect(store.get(a.id)).toBeDefined();
+  });
+
+  it("writes no answer content to events.jsonl, compacted records, or search after deletion", async () => {
+    const store = await open({ retentionDays: 1 });
+    const { record } = must(await store.create({ agentId: "ag1", document: DOC }));
+    await answered(store, record.id, ["queue", "chk.a", "chk.b"]);
+    await store.recordEvent("delivery.delivered", { surfaceId: record.id, n: 1 });
+    must(await store.deleteDecision(record.id, "queue"));
+    clock += 3 * 86_400_000;
+    await store.compactDue();
+    expect(store.decisions({ text: "cheaper" })).toEqual([]);
+    const files = [path.join(dir, "events.jsonl"), path.join(dir, "surfaces", record.id, "record.json")];
+    for (const f of files) expect(await fs.readFile(f, "utf8")).not.toContain("cheaper to run");
   });
 });

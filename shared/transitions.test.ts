@@ -539,14 +539,13 @@ describe("deleteDecisions", () => {
     return run(r, { kind: "updateDelivery", n: 1, to: "delivered", now: T1 });
   };
 
-  it("redacts the question and blanks a delivered text once all its questions are gone", () => {
+  it("redacts the question and blanks the delivered text as soon as one carried answer is deleted", () => {
     const r = answered();
     const one = run(r, { kind: "deleteDecisions", questions: ["queue"], now: T1 });
     expect(one.questions.queue).toMatchObject({ deleted: true, prompt: "" });
     expect(one.questions.queue.answer).toBeUndefined();
-    expect(one.deliveries[0].text).not.toBe("");
-    const all = run(one, { kind: "deleteDecisions", questions: ["name"], now: T1 });
-    expect(all.deliveries[0].text).toBe("");
+    expect(one.deliveries[0].text).toBe("");
+    expect(JSON.stringify(one)).not.toContain("because");
   });
 
   it("leaves skipped questions, and a repeat changes nothing", () => {
@@ -621,5 +620,97 @@ describe("applyCommand", () => {
     const next = draft(r, "queue", { value: "bullmq" });
     expect(next.rev).toBe(r.rev + 1);
     expect(JSON.stringify(r)).toBe(frozen);
+  });
+});
+
+// --- review findings on PR 5 ---------------------------------------------------
+
+const AB: SurfaceDocument = {
+  v: 1,
+  summary: "Two questions",
+  questions: [
+    { id: "q", kind: "text", prompt: "Secret?" },
+    { id: "r", kind: "review", prompt: "Check", items: [{ id: "a", title: "A" }, { id: "b", title: "B" }] },
+  ],
+};
+const send1 = (r: SurfaceRecord, targets: string[], extra: Record<string, unknown> = {}): SurfaceRecord =>
+  run(r, { kind: "send", targets: targets.map((target) => ({ target, version: 1 })), now: T1, ...extra } as Command);
+const setDelivered = (r: SurfaceRecord, n = 1): SurfaceRecord => run(r, { kind: "updateDelivery", n, to: "delivered", now: T1 });
+
+describe("deleting a decision: partial review keeps its open items", () => {
+  it("leaves the unanswered item answerable and redacts the answered one", () => {
+    let r = draft(make(AB), "r.a", { verdict: "approve", comment: "secret-comment" });
+    r = setDelivered(send1(r, ["r.a"]));
+    r = run(r, { kind: "deleteDecisions", questions: ["r"], now: T1 });
+    expect(JSON.stringify(r)).not.toContain("secret-comment");
+    expect(r.questions.r.state).toBe("open");
+    expect(Object.keys(r.questions.r.items ?? {})).toEqual(["a", "b"]);
+    r = draft(r, "r.b", { verdict: "change" });
+    r = send1(r, ["r.b"]);
+    expect(r.questions.r.state).toBe("answered");
+  });
+
+  it("a later answer to the remaining item is still a decision, and the deleted one is not", async () => {
+    const { decisionsOf } = await import("./projections");
+    let r = draft(make(AB), "r.a", { verdict: "approve" });
+    r = setDelivered(send1(r, ["r.a"]));
+    r = run(r, { kind: "deleteDecisions", questions: ["r"], now: T1 });
+    r = draft(r, "r.b", { verdict: "change" });
+    r = send1(r, ["r.b"]);
+    expect(decisionsOf(r)[0].items?.map((i) => i.id)).toEqual(["b"]);
+  });
+});
+
+describe("deleting a decision: pending deliveries", () => {
+  it("refuses while the delivery carrying it is not delivered, for every state but delivered", () => {
+    const base = send1(draft(make(AB), "q", { value: "secret" }), ["q"]);
+    for (const to of ["queued", "held", "uncertain", "failed", "removed"] as const) {
+      let r = base;
+      if (to === "held") r = run(r, { kind: "updateDelivery", n: 1, to: "held", now: T1 });
+      if (to === "uncertain") r = run(r, { kind: "updateDelivery", n: 1, to: "uncertain", now: T1 });
+      if (to === "failed") r = run(r, { kind: "updateDelivery", n: 1, to: "failed", now: T1 });
+      if (to === "removed") r = run(r, { kind: "updateDelivery", n: 1, to: "removed", now: T1 });
+      const x = applyCommand(r, { kind: "deleteDecisions", questions: ["q"], now: T1 });
+      expect(refusal(x).code).toBe("delivery-pending");
+      expect(JSON.stringify(r)).toContain("secret");
+    }
+    expect(applyCommand(setDelivered(base), { kind: "deleteDecisions", questions: ["q"], now: T1 }).ok).toBe(true);
+  });
+
+  it("deleting everything leaves out decisions whose delivery is pending", () => {
+    let r = draft(make(AB), "q", { value: "secret" });
+    r = send1(r, ["q"]);
+    r = draft(r, "r.a", { verdict: "approve" });
+    r = setDelivered(send1(r, ["r.a"]), 2);
+    const next = run(r, { kind: "deleteDecisions", now: T1 });
+    expect(next.questions.q.deleted).toBeUndefined();
+    expect(next.questions.r.items?.a.answer).toBeUndefined();
+  });
+});
+
+describe("retry while archived", () => {
+  it("is refused until the agent is restored", () => {
+    let r = send1(draft(make(AB), "q", { value: "x" }), ["q"]);
+    r = run(r, { kind: "holdOnArchive", now: T1 });
+    expect(r.deliveries[0].state).toBe("held");
+    expect(refusal(applyCommand(r, { kind: "retryDelivery", n: 1, now: T1 })).code).toBe("agent-archived");
+    r = run(r, { kind: "agentRestored", now: T1 });
+    expect(run(r, { kind: "retryDelivery", n: 1, now: T1 }).deliveries[0].state).toBe("queued");
+  });
+
+  it("no command moves a delivery to queued while archived", () => {
+    let r = send1(draft(make(AB), "q", { value: "x" }), ["q"]);
+    r = run(r, { kind: "holdOnArchive", now: T1 });
+    expect(applyCommand(r, { kind: "updateDelivery", n: 1, to: "queued", now: T1 }).ok).toBe(false);
+  });
+});
+
+describe("deleting a decision removes every stored copy", () => {
+  it("blanks a delivered text shared with another decision, and one that carried a comment", () => {
+    let r = draft(draft(make(AB), "q", { value: "secret-answer" }), "r.a", { verdict: "approve" });
+    r = setDelivered(send1(r, ["q", "r.a"]));
+    r = run(r, { kind: "deleteDecisions", questions: ["q"], now: T1 });
+    expect(JSON.stringify(r)).not.toContain("secret-answer");
+    expect(r.deliveries[0].text).toBe("");
   });
 });

@@ -163,8 +163,10 @@ export function searchDecisions(all: Decision[], query: DecisionQuery = {}): Dec
 
 /** True when nothing of the record is worth keeping once its decisions are deleted. */
 export function allDecisionsDeleted(record: SurfaceRecord): boolean {
-  return decisionsOf(record).length === 0 && Object.keys(record.questions).every((id) => {
+  const ids = Object.keys(record.questions);
+  const deletedSome = ids.some((id) => {
     const q = record.questions[id];
-    return q.deleted || q.state === "skipped" || q.state === "closed" || q.state === "open";
-  }) && Object.keys(record.questions).some((id) => record.questions[id].deleted);
+    return q.deleted || (q.items !== undefined && Object.keys(q.items).some((i) => q.items?.[i].deleted));
+  });
+  return deletedSome && decisionsOf(record).length === 0;
 }
