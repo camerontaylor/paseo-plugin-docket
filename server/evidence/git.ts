@@ -7,10 +7,22 @@
 //   3. `-c` overrides turn off the repository-config hooks that execute
 //      commands (fsmonitor, hooks path, pager), and every diff is run with
 //      --no-ext-diff and --no-textconv at the call site.
+//   4. Clean/smudge filters are named by attributes (a checked-in .gitattributes,
+//      which `--attr-source` empties, or the local .git/info/attributes, which
+//      nothing can switch off) and defined in config. `diff` compares the work
+//      tree with the index and runs a filter for any file whose stat changed, so
+//      before every `diff` we list the repository's `filter.*` drivers with
+//      `git config --list` and override each one's clean, smudge, process and
+//      required with an empty value, which git treats as "no filter".
+//
+// Requires git 2.40 or newer (`--attr-source`); older git fails with "unknown option".
 
 import { execFile } from "node:child_process";
 
 export const READ_ONLY = new Set(["rev-parse", "diff", "ls-files"]);
+
+/** The one `config` call the runner makes itself: list the keys, change nothing. */
+const LIST_KEYS = ["config", "--list", "--name-only", "-z"];
 
 export const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
@@ -59,15 +71,11 @@ function gitEnv(): NodeJS.ProcessEnv {
   };
 }
 
-export const runGit: GitRunner = (cwd, args, options) => {
-  const subcommand = args[0];
-  if (!READ_ONLY.has(subcommand)) {
-    throw new Error(`git ${subcommand} is not a read-only command the evidence reader may run`);
-  }
+function exec(cwd: string, args: readonly string[], options: GitOptions, extra: readonly string[] = []): Promise<GitResult> {
   return new Promise((resolve) => {
     execFile(
       "git",
-      [...GLOBAL_ARGS, ...args],
+      [...GLOBAL_ARGS, ...extra, ...args],
       { cwd, env: gitEnv(), maxBuffer: options.maxBytes, encoding: "utf8", signal: options.signal, windowsHide: true },
       (error, stdout, stderr) => {
         if (!error) return resolve({ ok: true, stdout });
@@ -82,4 +90,34 @@ export const runGit: GitRunner = (cwd, args, options) => {
       },
     );
   });
+}
+
+/** `-c filter.<name>.<key>=` for every filter driver the repository's configuration defines. */
+export function filterOverrides(configKeysZ: string): string[] {
+  const names = new Set<string>();
+  for (const key of configKeysZ.split("\0")) {
+    const m = /^filter\.(.+)\.(?:clean|smudge|process|required)$/i.exec(key);
+    if (m) names.add(m[1]);
+  }
+  const out: string[] = [];
+  for (const name of names) {
+    for (const k of ["clean", "smudge", "process"]) out.push("-c", `filter.${name}.${k}=`);
+    out.push("-c", `filter.${name}.required=false`);
+  }
+  return out;
+}
+
+export const runGit: GitRunner = async (cwd, args, options) => {
+  const subcommand = args[0];
+  if (!READ_ONLY.has(subcommand)) {
+    throw new Error(`git ${subcommand} is not a read-only command the evidence reader may run`);
+  }
+  if (subcommand !== "diff") return exec(cwd, args, options);
+  // Fail closed: if the filters cannot be listed, the diff is not run.
+  const keys = await exec(cwd, LIST_KEYS, { ...options, maxBytes: 1024 * 1024 });
+  if (!keys.ok) {
+    if (keys.reason === "failed" && /not a git repository/i.test(keys.stderr)) return exec(cwd, args, options);
+    return keys;
+  }
+  return exec(cwd, args, options, filterOverrides(keys.stdout));
 };

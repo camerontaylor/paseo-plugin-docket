@@ -1,4 +1,4 @@
-import { mkdirSync, symlinkSync, unlinkSync } from "node:fs";
+import { mkdirSync, renameSync, symlinkSync, unlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -113,5 +113,54 @@ describe("readConfinedText", () => {
     const { ws } = setup();
     symlinkSync(path.join(ws, "gone"), path.join(ws, "dangling"));
     expect(await read(ws, "dangling")).toMatchObject({ ok: false });
+  });
+
+  describe("a parent directory swapped for a link while the file is being read", () => {
+    function racy() {
+      const { ws, outside } = setup();
+      write(ws, "sub/f.txt", "inside\n");
+      write(outside, "f.txt", "OUTSIDE SECRET\n");
+      const away = path.join(ws, "..", "sub-moved");
+      const swap = () => {
+        renameSync(path.join(ws, "sub"), away);
+        symlinkSync(outside, path.join(ws, "sub"));
+      };
+      const swapBack = () => {
+        unlinkSync(path.join(ws, "sub"));
+        renameSync(away, path.join(ws, "sub"));
+      };
+      return { ws, swap, swapBack };
+    }
+    it("swapped after the check, before the open: refused, nothing outside is returned", async () => {
+      const { ws, swap } = racy();
+      const r = await read(ws, "sub/f.txt", { hooks: { beforeOpen: swap } });
+      expect(r).toMatchObject({ ok: false, reason: "outside" });
+      expect(JSON.stringify(r)).not.toContain("SECRET");
+    });
+    it("swapped before the open and swapped back right after it: still refused", async () => {
+      const { ws, swap, swapBack } = racy();
+      const r = await read(ws, "sub/f.txt", { hooks: { beforeOpen: swap, afterOpen: swapBack } });
+      expect(r).toMatchObject({ ok: false, reason: "outside" });
+      expect(JSON.stringify(r)).not.toContain("SECRET");
+    });
+    it("swapped to a link inside the workspace: the file read is the one opened, and it is allowed", async () => {
+      const { ws } = setup();
+      write(ws, "sub/f.txt", "one\n");
+      write(ws, "other/f.txt", "two\n");
+      const r = await read(ws, "sub/f.txt", {
+        hooks: {
+          beforeOpen: () => {
+            renameSync(path.join(ws, "sub"), path.join(ws, "sub-moved"));
+            symlinkSync(path.join(ws, "other"), path.join(ws, "sub"));
+          },
+        },
+      });
+      expect(r).toMatchObject({ ok: true, text: "two\n" });
+    });
+    it("with no swap, the hooks change nothing", async () => {
+      const { ws } = setup();
+      write(ws, "sub/f.txt", "same\n");
+      expect(await read(ws, "sub/f.txt", { hooks: { beforeOpen: () => {}, afterOpen: () => {} } })).toMatchObject({ ok: true, text: "same\n" });
+    });
   });
 });

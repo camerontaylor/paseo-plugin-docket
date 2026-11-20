@@ -1,19 +1,21 @@
-import { chmodSync, existsSync } from "node:fs";
+import { chmodSync, existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { LIMITS } from "../../shared/limits";
 import { loadChanges } from "./changes";
 import { readConfinedText } from "./confine";
-import { runGit } from "./git";
+import { filterOverrides, runGit } from "./git";
 import { git, makeRepo, tempDir, write } from "./test-support";
 
 describe("runGit is read-only", () => {
   it("throws for every subcommand outside the allowlist", async () => {
     const dir = makeRepo();
     for (const sub of ["commit", "checkout", "add", "reset", "clean", "config", "fetch", "push", "gc", "stash", "apply", "update-index", "status", "log", "show"]) {
-      expect(() => runGit(dir, [sub], { maxBytes: 100 }), sub).toThrow();
+      await expect(runGit(dir, [sub], { maxBytes: 100 }), sub).rejects.toThrow(/read-only/);
     }
-    expect(() => runGit(dir, [], { maxBytes: 100 })).toThrow();
+    await expect(runGit(dir, [], { maxBytes: 100 })).rejects.toThrow();
+    // `config` is only ever run by the runner itself, in one fixed form
+    await expect(runGit(dir, ["config", "--list"], { maxBytes: 100 })).rejects.toThrow();
   });
   it("answers an allowed subcommand and caps output", async () => {
     const dir = makeRepo();
@@ -81,5 +83,75 @@ describe("a hostile repository's configuration never runs", () => {
     const r = await loadChanges({ paths: [`--output=${out}`] }, { cwd: dir, git: runGit, readFile: readConfinedText, limits: LIMITS });
     expect(existsSync(out)).toBe(false);
     expect(r.ok && r.files).toEqual([]);
+  });
+});
+
+describe("filters defined in the repository's own config", () => {
+  function hostile() {
+    const dir = makeRepo({ "a.txt": "1\n", "b.dat": "1\n", "c.md": "1\n" });
+    const marks = tempDir("docket-marks-");
+    const script = (name: string) => {
+      const p = write(marks, name + ".sh", `#!/bin/sh\ntouch "${marks}/${name}.ran"\ncat\n`);
+      chmodSync(p, 0o755);
+      return p;
+    };
+    git(dir, "config", "filter.x.clean", script("clean"));
+    git(dir, "config", "filter.x.smudge", script("smudge"));
+    git(dir, "config", "filter.x.required", "true");
+    git(dir, "config", "filter.p.process", script("process"));
+    git(dir, "config", "filter.Dotted.Name.clean", script("dotted"));
+    // the attributes live where a clone cannot ship them but a local config can
+    write(dir, ".git/info/attributes", "*.txt filter=x\n*.dat filter=p\n*.md filter=Dotted.Name\n");
+    return { dir, marks };
+  }
+  const ran = (marks: string, n: string) => existsSync(path.join(marks, `${n}.ran`));
+
+  it("runs no clean, smudge, process or required filter from .git/config and .git/info/attributes", async () => {
+    const { dir, marks } = hostile();
+    write(dir, "a.txt", "2\n");
+    write(dir, "b.dat", "2\n");
+    write(dir, "c.md", "2\n");
+    write(dir, "new.txt", "n\n");
+    const r = await loadChanges({}, { cwd: dir, git: runGit, readFile: readConfinedText, limits: LIMITS });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.files.map((f) => f.path)).toEqual(["a.txt", "b.dat", "c.md", "new.txt"]);
+    for (const n of ["clean", "smudge", "process", "dotted"]) expect(ran(marks, n), n).toBe(false);
+  });
+  it("also for a commit and a range, and for ls-files", async () => {
+    const { dir, marks } = hostile();
+    write(dir, "a.txt", "2\n");
+    git(dir, "-c", "filter.x.clean=cat", "-c", "filter.p.process=", "-c", "filter.Dotted.Name.clean=cat", "add", "-A");
+    git(dir, "commit", "-q", "-m", "two");
+    for (const n of ["clean", "smudge", "process", "dotted"]) rmSync(path.join(marks, `${n}.ran`), { force: true });
+    for (const of of ["HEAD", "HEAD~1..HEAD", "HEAD~1...HEAD"]) {
+      expect((await loadChanges({ of }, { cwd: dir, git: runGit, readFile: readConfinedText, limits: LIMITS })).ok, of).toBe(true);
+    }
+    for (const n of ["clean", "smudge", "process", "dotted"]) expect(ran(marks, n), n).toBe(false);
+  });
+  it("a filter defined through an included config file is neutralised too", async () => {
+    const dir = makeRepo({ "a.txt": "1\n" });
+    const marks = tempDir("docket-marks-");
+    const p = write(marks, "inc.sh", `#!/bin/sh\ntouch "${marks}/inc.ran"\ncat\n`);
+    chmodSync(p, 0o755);
+    write(dir, ".git/extra.cfg", `[filter "inc"]\n\tclean = ${p}\n`);
+    git(dir, "config", "include.path", path.join(dir, ".git/extra.cfg"));
+    write(dir, ".git/info/attributes", "*.txt filter=inc\n");
+    write(dir, "a.txt", "2\n");
+    expect((await loadChanges({}, { cwd: dir, git: runGit, readFile: readConfinedText, limits: LIMITS })).ok).toBe(true);
+    expect(ran(marks, "inc")).toBe(false);
+  });
+  it("fails closed when the filters cannot be listed", async () => {
+    const dir = makeRepo();
+    const r = await runGit(dir, ["diff", "--name-status"], { maxBytes: 100, signal: AbortSignal.abort() });
+    expect(r.ok).toBe(false);
+  });
+  it("lists drivers from `config --list` keys", () => {
+    const keys = "core.bare\0filter.x.clean\0filter.x.required\0filter.a.b.smudge\0Filter.Up.process\0filterx.y.clean\0filter.clean\0";
+    expect(filterOverrides(keys).filter((_, i) => i % 2 === 1)).toEqual([
+      "filter.x.clean=", "filter.x.smudge=", "filter.x.process=", "filter.x.required=false",
+      "filter.a.b.clean=", "filter.a.b.smudge=", "filter.a.b.process=", "filter.a.b.required=false",
+      "filter.Up.clean=", "filter.Up.smudge=", "filter.Up.process=", "filter.Up.required=false",
+    ]);
+    expect(filterOverrides("")).toEqual([]);
   });
 });
