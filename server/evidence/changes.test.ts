@@ -1,6 +1,6 @@
-import { existsSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, existsSync, rmSync, symlinkSync } from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { LIMITS } from "../../shared/limits";
 import { loadChanges } from "./changes";
 import { readConfinedText } from "./confine";
@@ -267,9 +267,38 @@ describe("loadChanges: sections and totals", () => {
   it("stops as soon as untracked patches add up past the limit, naming the narrowing", async () => {
     const dir = makeRepo();
     for (let i = 0; i < 8; i++) write(dir, `u${i}.txt`, `${"line\n".repeat(150)}`);
-    const r = await loadChanges({}, ctx(dir, { loadedFileBytes: 2000 }));
+    const readFile = vi.fn(readConfinedText);
+    const r = await loadChanges({}, { ...ctx(dir, { loadedFileBytes: 2000 }), readFile });
     expect(r).toMatchObject({ ok: false, reason: "too-large" });
+    expect(readFile).toHaveBeenCalledTimes(3);
   });
+  it("keeps patches for filenames that Git quotes", async () => {
+    const names = ['a"b.txt', "c\\d.txt", "e\tf.txt", "g\nh.txt"];
+    const dir = makeRepo(Object.fromEntries(names.map((name) => [name, "before\n"])));
+    for (const name of names) write(dir, name, "after\n");
+    const result = await loadChanges({}, ctx(dir));
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) return;
+    expect(result.files.map((file) => file.path)).toEqual(names);
+    expect(result.files.every((file) => file.hunks?.length === 1)).toBe(true);
+  });
+
+  it("reads changes from a split index", async () => {
+    const dir = makeRepo({ "a.txt": "before\n" });
+    git(dir, "update-index", "--split-index");
+    expect(git(dir, "rev-parse", "--shared-index-path")).toContain("sharedindex.");
+    write(dir, "a.txt", "after\n");
+    const result = await loadChanges({}, ctx(dir));
+    expect(result).toMatchObject({ ok: true, files: [{ path: "a.txt", status: "changed" }] });
+  });
+
+  it("honors core.filemode=false for tracked files", async () => {
+    const dir = makeRepo({ "a.txt": "before\n" });
+    git(dir, "config", "core.filemode", "false");
+    chmodSync(path.join(dir, "a.txt"), 0o755);
+    expect(await loadChanges({}, ctx(dir))).toMatchObject({ ok: true, files: [] });
+  });
+
   it("works in a SHA-256 repository, including a first commit", async () => {
     const dir = tempDir("docket-sha256-");
     git(dir, "init", "-q", "-b", "main", "--object-format=sha256");

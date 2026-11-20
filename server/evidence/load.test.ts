@@ -1,6 +1,6 @@
 import { mkdirSync, symlinkSync } from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { SurfaceDocument } from "../../shared/document";
 import { LIMITS } from "../../shared/limits";
 import type { FileReader } from "./confine";
@@ -254,7 +254,13 @@ describe("the loading budget", () => {
   });
   it("leaves no timer running after a quick load", async () => {
     const dir = makeRepo({ "a.ts": "x\n" });
-    const r = await loadEvidence(doc({ t: "code", file: "a.ts" }), { cwd: dir, budgetMs: 60_000 });
-    expect(r.ok).toBe(true);
+    vi.useFakeTimers();
+    try {
+      const r = await loadEvidence(doc({ t: "code", file: "a.ts" }), { cwd: dir, budgetMs: 60_000 });
+      expect(r.ok).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -55,6 +55,17 @@ function firstLine(text: string): string {
   return text.trim().split("\n")[0] ?? "";
 }
 
+// With core.quotePath=false, Git C-quotes backslashes, quotes and ASCII controls.
+function patchPath(name: string): string {
+  const escapes: Record<string, string> = {
+    "\x07": "\\a", "\b": "\\b", "\t": "\\t", "\n": "\\n", "\v": "\\v",
+    "\f": "\\f", "\r": "\\r", '"': '\\"', "\\": "\\\\",
+  };
+  const quoted = name.replace(/["\\\x00-\x1f\x7f]/g, (char) =>
+    escapes[char] ?? "\\" + char.charCodeAt(0).toString(8).padStart(3, "0"));
+  return quoted === name ? name : '"' + quoted + '"';
+}
+
 export async function loadChanges(input: { of?: string; paths?: string[] }, ctx: ChangesContext): Promise<ChangesResult> {
   const limits = ctx.limits ?? LIMITS;
   const cap = limits.loadedFileBytes + 1;
@@ -157,22 +168,18 @@ export async function loadChanges(input: { of?: string; paths?: string[] }, ctx:
     const byHeader = new Map<string, Held>();
     for (const t of order) {
       const h = keptTracked.find((k) => k.path === t.path)!;
-      byHeader.set(`diff --git a/${t.oldPath ?? t.path} b/${t.path}`, h);
+      const header = "diff --git " + patchPath("a/" + (t.oldPath ?? t.path)) + " " + patchPath("b/" + t.path);
+      if (byHeader.has(header)) return fail("git-failed", "multiple changed files have the same patch header");
+      byHeader.set(header, h);
     }
-    let unmatched = 0;
     for (const piece of splitPatch(patch.stdout)) {
-      const h = byHeader.get(piece.slice(0, piece.indexOf("\n") < 0 ? piece.length : piece.indexOf("\n")));
-      if (!h) {
-        unmatched++;
-        continue;
-      }
+      const h = byHeader.get(piece.split("\n", 1)[0]);
+      if (!h) return fail("git-failed", "git returned a patch section that could not be matched to a changed file");
       h.patch += piece;
       h.hunks = [...h.hunks, ...hunkHeaders(piece)];
     }
-    if (unmatched > 0) notesOut.push(`${unmatched} section${unmatched === 1 ? "" : "s"} of the diff could not be matched to a file, so ${unmatched === 1 ? "it is" : "they are"} not shown`);
-    let heldBytes = 0;
-    for (const h of keptTracked) heldBytes += h.patch.length;
-    patchBytes += heldBytes;
+    if (keptTracked.some((h) => h.patch === "")) return fail("git-failed", "git omitted a patch for a changed file");
+    patchBytes = Buffer.byteLength(patch.stdout);
     if (patchBytes > limits.loadedFileBytes) return fail("too-large", `${itemSizeProblem("the diff", patchBytes, limits)}; narrow it with \`paths\``);
   }
 
@@ -195,7 +202,7 @@ export async function loadChanges(input: { of?: string; paths?: string[] }, ctx:
     h.added = splitLines(read.text).length;
     h.hunks = hunkHeaders(h.patch);
     // Stop as soon as the snapshot cannot fit, instead of holding hundreds of MiB first.
-    patchBytes += h.patch.length;
+    patchBytes += Buffer.byteLength(h.patch);
     const over = itemSizeProblem("the diff", patchBytes, limits);
     if (over) return fail("too-large", `${over}; narrow it with \`paths\``);
   }

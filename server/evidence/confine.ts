@@ -8,7 +8,7 @@
 
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { type FileHandle, open, readlink, realpath, stat } from "node:fs/promises";
+import { type FileHandle, open, readlink, realpath } from "node:fs/promises";
 import path from "node:path";
 import { pathSyntaxProblem } from "../../shared/evidence";
 
@@ -65,24 +65,12 @@ function code(cause: unknown): string | undefined {
   return typeof cause === "object" && cause !== null && "code" in cause ? String((cause as { code: unknown }).code) : undefined;
 }
 
-/**
- * Whether the open descriptor is a file under a permitted folder. On Linux the kernel names it in
- * /proc/self/fd/<n>, which no later swap of a directory can change. Elsewhere, the descriptor must
- * be the same file (device and inode) that the resolved path names now, and that path must still
- * resolve to itself. That fallback is weaker: it checks two paths after the open, so it narrows the
- * window for a parent-directory swap but does not close it (node has no portable way to ask a
- * descriptor for its path). Only Linux is race-safe against a writer inside the workspace.
- */
-async function descriptorInside(handle: FileHandle, realRoots: readonly string[], real: string): Promise<boolean> {
+/** Verify the kernel's path for the opened descriptor before reading any bytes. */
+async function descriptorInside(handle: FileHandle, realRoots: readonly string[]): Promise<boolean> {
+  if (process.platform !== "linux") return false;
   try {
     const actual = await readlink(`/proc/self/fd/${handle.fd}`);
-    if (path.isAbsolute(actual)) return realRoots.some((root) => inside(root, actual.replace(/ \(deleted\)$/, "")));
-  } catch {
-    /* no procfs: fall through */
-  }
-  try {
-    const [byPath, byFd] = [await stat(real), await handle.stat()];
-    return byPath.dev === byFd.dev && byPath.ino === byFd.ino && (await realpath(real)) === real && realRoots.some((root) => inside(root, real));
+    return path.isAbsolute(actual) && realRoots.some((root) => inside(root, actual));
   } catch {
     return false;
   }
@@ -124,7 +112,7 @@ export const readConfinedText: FileReader = async (requested, options) => {
     await options.hooks?.afterOpen?.();
     // O_NOFOLLOW only guards the last component: a parent directory swapped for a link after the
     // check would land elsewhere. So ask the kernel where the descriptor we hold really is.
-    if (!(await descriptorInside(handle, realRoots, real))) return failure("outside", OUTSIDE);
+    if (!(await descriptorInside(handle, realRoots))) return failure("outside", OUTSIDE);
     const info = await handle.stat();
     if (!info.isFile()) return failure("not-file", "not a regular file");
     if (info.size > options.maxBytes) {

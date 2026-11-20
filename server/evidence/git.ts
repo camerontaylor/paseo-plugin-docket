@@ -1,4 +1,4 @@
-// Git, read only (spec 27.3). Three safeguards, because a repository's own
+// Git, read only (spec 27.3). Safeguards, because a repository's own
 // configuration can make git run programs:
 //   1. only the subcommands in READ_ONLY are ever run;
 //   2. the environment is rebuilt, with the user and system config ignored,
@@ -22,16 +22,16 @@
 // covered is that nothing in .git/config, .git/info/attributes or a checked-in
 // .gitattributes makes evidence loading run a program. What is not covered:
 // `rev-parse` and `ls-files` still read the repository's config (their `-c`
-// overrides cover the settings that execute commands), and per-repository
-// core.filemode, core.symlinks and core.ignorecase are not carried over.
+// overrides cover the settings that execute commands). The private config
+// repeats only explicitly selected boolean settings.
 //
 // Needs no particular git version: no `--attr-source` is used, because the private git directory above
 // defines no driver for an attribute to select.
 
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve as resolvePath } from "node:path";
+import { basename, join, resolve as resolvePath } from "node:path";
 
 export const READ_ONLY = new Set(["rev-parse", "diff", "ls-files"]);
 
@@ -112,41 +112,80 @@ async function revParse(cwd: string, options: GitOptions, ...args: string[]): Pr
   return r.ok ? r.stdout.trim() : r;
 }
 
-/**
- * Run `diff` against a private git directory so the repository's own config and
- * info/attributes are never read. Returns the not-ok result of the setup step
- * (a `not a git repository` is passed to the caller as a plain run).
- */
+function setupFailure(cause: unknown): Failed {
+  return { ok: false, reason: "failed", message: `private Git directory: ${cause instanceof Error ? cause.message : String(cause)}`, stderr: "" };
+}
+
+/** Run diff with a private index and an allowlisted configuration. */
 async function shadowDiff(cwd: string, args: readonly string[], options: GitOptions): Promise<GitResult> {
-  const top = await revParse(cwd, options, "--show-toplevel");
-  if (typeof top !== "string") return top.reason === "failed" ? exec(cwd, args, options) : top;
-  const objects = await revParse(cwd, options, "--git-path", "objects");
-  const index = await revParse(cwd, options, "--git-path", "index");
-  const head = await revParse(cwd, options, "--verify", "-q", "HEAD");
-  const format = await revParse(cwd, options, "--show-object-format");
-  if (typeof objects !== "string") return objects;
-  if (typeof index !== "string") return index;
-  const shadow = await mkdtemp(join(tmpdir(), "docket-git-"));
+  let shadow: string | undefined;
+  let result: GitResult;
   try {
+    const top = await revParse(cwd, options, "--show-toplevel");
+    if (typeof top !== "string") return top;
+    const objects = await revParse(cwd, options, "--git-path", "objects");
+    if (typeof objects !== "string") return objects;
+    const index = await revParse(cwd, options, "--git-path", "index");
+    if (typeof index !== "string") return index;
+    const format = await revParse(cwd, options, "--show-object-format");
+    if (typeof format !== "string") return format;
+    const head = await revParse(cwd, options, "--verify", "-q", "HEAD");
+    if (typeof head !== "string" && (head.reason !== "failed" || head.stderr !== "")) return head;
+
+    let config = `[core]\n\trepositoryformatversion = ${format === "sha256" ? 1 : 0}\n\tbare = false\n`;
+    for (const key of ["filemode", "symlinks", "ignorecase"]) {
+      const value = await exec(cwd, ["config", "--type=bool", "--get", `core.${key}`], { ...options, maxBytes: 1024 });
+      if (!value.ok) {
+        // An unset key yields no stderr. Git validates values before printing.
+        if (value.reason !== "failed" || value.stderr !== "") return value;
+        continue;
+      }
+      const normalized = value.stdout.trim();
+      if (normalized === "true" || normalized === "false") config += `\t${key} = ${normalized}\n`;
+    }
+    if (format === "sha256") config += "[extensions]\n\tobjectformat = sha256\n";
+
+    shadow = await mkdtemp(join(tmpdir(), "docket-git-"));
     await mkdir(join(shadow, "objects", "info"), { recursive: true });
     await mkdir(join(shadow, "refs"), { recursive: true });
-    await writeFile(join(shadow, "objects", "info", "alternates"), `${resolvePath(cwd, objects)}\n`);
-    await writeFile(
-      join(shadow, "config"),
-      format === "sha256"
-        ? "[core]\n\trepositoryformatversion = 1\n\tbare = false\n[extensions]\n\tobjectformat = sha256\n"
-        : "[core]\n\trepositoryformatversion = 0\n\tbare = false\n",
-    );
-    // An unborn HEAD is a symbolic ref to a branch that does not exist, as in the real repository.
+    const objectPath = resolvePath(cwd, objects);
+    if (/[\r\n]/.test(objectPath)) throw new Error("object directory path contains a line break");
+    await writeFile(join(shadow, "objects", "info", "alternates"), `${objectPath}\n`);
+    await writeFile(join(shadow, "config"), config);
     await writeFile(join(shadow, "HEAD"), typeof head === "string" && /^[0-9a-f]{40,64}$/.test(head) ? `${head}\n` : "ref: refs/heads/unborn\n");
-    const realIndex = isAbsolute(index) ? index : resolvePath(cwd, index);
-    await copyFile(realIndex, join(shadow, "index")).catch((e: NodeJS.ErrnoException) => {
-      if (e.code !== "ENOENT") throw e; // no index yet: diff sees an empty one
+
+    const realIndex = resolvePath(cwd, index);
+    const indexInfo = await stat(realIndex).catch((cause: NodeJS.ErrnoException) => {
+      if (cause.code !== "ENOENT") throw cause;
+      return undefined; // no index yet: diff sees an empty one
     });
-    return await exec(cwd, args, options, { GIT_DIR: shadow, GIT_WORK_TREE: top });
-  } finally {
-    await rm(shadow, { recursive: true, force: true });
+    if (indexInfo) {
+      const privateIndex = join(shadow, "index");
+      await copyFile(realIndex, privateIndex);
+      // Round down so timestamp precision cannot make a racy entry look clean.
+      await utimes(privateIndex, indexInfo.atime, Math.floor(indexInfo.mtimeMs / 1000));
+      const shared = await revParse(cwd, options, "--shared-index-path");
+      if (typeof shared !== "string") throw new Error(shared.stderr.trim() || shared.message);
+      if (shared !== "") {
+        const name = basename(shared);
+        if (!/^sharedindex\.(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(name)) throw new Error("invalid shared index name");
+        await copyFile(resolvePath(cwd, shared), join(shadow, name));
+      }
+    }
+    result = await exec(cwd, args, options, { GIT_DIR: shadow, GIT_WORK_TREE: top });
+  } catch (cause) {
+    result = options.signal?.aborted
+      ? { ok: false, reason: "cancelled", message: "git was stopped", stderr: "" }
+      : setupFailure(cause);
   }
+  if (shadow !== undefined) {
+    try {
+      await rm(shadow, { recursive: true, force: true });
+    } catch (cause) {
+      if (result.ok) return setupFailure(cause);
+    }
+  }
+  return result;
 }
 
 export const runGit: GitRunner = async (cwd, args, options) => {

@@ -1,9 +1,12 @@
 import { mkdirSync, renameSync, symlinkSync, unlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import * as fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readConfinedText, sha256 } from "./confine";
 import { tempDir, write } from "./test-support";
+
+vi.mock("node:fs/promises", { spy: true });
 
 function setup() {
   const base = tempDir();
@@ -23,6 +26,15 @@ describe("readConfinedText", () => {
     const { ws } = setup();
     const r = await read(ws, "a.txt");
     expect(r).toMatchObject({ ok: true, text: "one\ntwo\n", bytes: 8, hash: sha256("one\ntwo\n") });
+  });
+  it("refuses an ordinary file when descriptor verification is unavailable", async () => {
+    const { ws } = setup();
+    const readlink = vi.spyOn(fs, "readlink").mockRejectedValueOnce(new Error("descriptor path unavailable"));
+    try {
+      expect(await read(ws, "a.txt")).toMatchObject({ ok: false, reason: "outside" });
+    } finally {
+      readlink.mockRestore();
+    }
   });
   it("reads paths with spaces and unicode", async () => {
     const { ws } = setup();

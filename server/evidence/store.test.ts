@@ -111,6 +111,17 @@ describe("changed since", () => {
     expect((await snapshotStatus(meta, opts(dir))).status).toBe("same");
     expect((await snapshotStatus(meta, opts(tempDir()))).status).toBe("gone");
   });
+  it("marks oversized file and diff rereads as changed", async () => {
+    const dir = makeRepo({ "a.txt": "a\n" });
+    const file = await loadEvidence({ v: 1, summary: "s", view: { t: "code", file: "a.txt" } }, { cwd: dir });
+    const diff = await loadChanges({}, { cwd: dir, git: runGit, readFile: readConfinedText });
+    if (!file.ok || !diff.ok) throw new Error("fixture evidence could not be loaded");
+    write(dir, "a.txt", "larger text\n".repeat(100));
+    const options = { cwd: dir, limits: { loadedFileBytes: 256 } };
+    expect(await snapshotStatus(file.evidence.snapshots["1"], options)).toMatchObject({ status: "changed" });
+    const meta = { kind: "changes" as const, of: "worktree", hash: diff.hash, readAt: "x", bytes: 1 };
+    expect(await snapshotStatus(meta, options)).toMatchObject({ status: "changed" });
+  });
   it("a snapshot that does not name its file is gone", async () => {
     const dir = makeRepo();
     expect((await snapshotStatus({ kind: "file", hash: "sha256:x", readAt: "x", bytes: 1 }, opts(dir))).status).toBe("gone");

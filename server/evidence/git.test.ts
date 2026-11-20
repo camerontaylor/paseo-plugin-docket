@@ -1,11 +1,14 @@
 import { chmodSync, existsSync, readFileSync, rmSync } from "node:fs";
+import * as fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { LIMITS } from "../../shared/limits";
 import { loadChanges } from "./changes";
 import { readConfinedText } from "./confine";
 import { runGit } from "./git";
 import { git, makeRepo, tempDir, write } from "./test-support";
+
+vi.mock("node:fs/promises", { spy: true });
 
 describe("runGit is read-only", () => {
   it("throws for every subcommand outside the allowlist", async () => {
@@ -23,6 +26,34 @@ describe("runGit is read-only", () => {
     expect(ok).toMatchObject({ ok: true });
     const big = await runGit(dir, ["rev-parse", "HEAD"], { maxBytes: 5 });
     expect(big).toMatchObject({ ok: false, reason: "too-large" });
+  });
+  it("returns a structured failure if private directory creation fails", async () => {
+    const dir = makeRepo();
+    const mkdtemp = vi.spyOn(fs, "mkdtemp").mockRejectedValueOnce(new Error("temporary storage unavailable"));
+    try {
+      expect(await runGit(dir, ["diff"], { maxBytes: 1000 })).toMatchObject({
+        ok: false, reason: "failed", message: "private Git directory: temporary storage unavailable",
+      });
+    } finally {
+      mkdtemp.mockRestore();
+    }
+  });
+  it("keeps the private index timestamp at or before the original", async () => {
+    const dir = makeRepo();
+    const index = path.join(dir, ".git", "index");
+    const original = await fs.stat(index);
+    const utimes = vi.spyOn(fs, "utimes");
+    try {
+      expect(await runGit(dir, ["diff"], { maxBytes: 1000 })).toMatchObject({ ok: true });
+      expect(utimes).toHaveBeenCalledWith(
+        expect.stringMatching(/docket-git-.*\/index$/),
+        original.atime,
+        Math.floor(original.mtimeMs / 1000),
+      );
+      expect((await fs.stat(index)).mtimeMs).toBe(original.mtimeMs);
+    } finally {
+      utimes.mockRestore();
+    }
   });
   it("reports a cancelled run", async () => {
     const dir = makeRepo();

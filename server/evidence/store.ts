@@ -91,9 +91,9 @@ export async function snapshotStatus(meta: SnapshotMeta, options: StatusOptions)
       maxBytes: limits.loadedFileBytes,
       signal: options.signal,
     });
-    return r.ok ? { status: compareHash(meta.fileHash, r.hash) } : { status: compareHash(meta.fileHash, null), detail: r.message };
+    return r.ok ? { status: compareHash(meta.fileHash, r.hash) } : { status: r.reason === "too-large" ? "changed" : "gone", detail: r.message };
   }
   const r = await loadChanges({ of: meta.of, paths: meta.paths }, { cwd: options.cwd, signal: options.signal, limits, git, readFile: readFileFn });
-  return r.ok ? { status: compareHash(meta.hash, r.hash) } : { status: compareHash(meta.hash, null), detail: r.message };
+  return r.ok ? { status: compareHash(meta.hash, r.hash) } : { status: r.reason === "too-large" ? "changed" : "gone", detail: r.message };
 }
 
