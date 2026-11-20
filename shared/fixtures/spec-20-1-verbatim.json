@@ -1,0 +1,45 @@
+{
+  "v": 1,
+  "summary": "Three things to settle before I start the queue work.",
+  "context": "Moving the mailer off cron onto a job queue. Nothing is changed yet.",
+  "questions": [
+    {
+      "id": "queue",
+      "kind": "choice",
+      "prompt": "Which queue?",
+      "recommend": "pg_boss",
+      "options": [
+        {
+          "id": "pg_boss",
+          "label": "pg-boss",
+          "detail": "Uses our Postgres"
+        },
+        {
+          "id": "bullmq",
+          "label": "BullMQ",
+          "detail": "Faster, needs Redis"
+        }
+      ]
+    },
+    {
+      "id": "channels",
+      "kind": "choice",
+      "multi": true,
+      "prompt": "Which channels?",
+      "options": [
+        "Email",
+        "Push",
+        "SMS"
+      ],
+      "recommend": [
+        "Email",
+        "Push"
+      ]
+    },
+    {
+      "id": "deadline",
+      "kind": "date",
+      "prompt": "Needed by?"
+    }
+  ]
+}
