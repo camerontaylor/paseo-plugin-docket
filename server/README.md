@@ -1,1 +1,3 @@
 Node only: the store, evidence, tools and transports. May use `class`. Never imports from `client/`; tested against a fake `PaseoApi`.
+
+`server/evidence/` loads what a `show` displays, all within a 20-second budget: `confine.ts` reads one file (links resolved, confined to the workspace and permitted folders), `git.ts` runs the three read-only git commands (`rev-parse`, `diff`, `ls-files`) with hooks, pagers, external diff, textconv and checked-in attributes off, `changes.ts` builds a `changes` block (ids `f1`, `f1h1`), `load.ts` loads every block and ref of a document, and `store.ts` writes snapshots (before the record) and compares hashes for "changed since". Pure parts live in `shared/evidence.ts`. Tests build fixture repos in temp dirs (`test-support.ts`).

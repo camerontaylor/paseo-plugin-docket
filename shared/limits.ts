@@ -22,6 +22,8 @@ export const LIMITS = {
   changesFiles: 300,
   openSurfacesPerAgent: 20,
   renderedBytes: 8 * 1024,
+  /** All loading for one `show` (plan S3): files, git and snapshots. */
+  evidenceBudgetMs: 20_000,
   // Not in the spec's table; first values chosen here.
   idLength: 32,
   optionIdLength: 64,
@@ -30,6 +32,10 @@ export const LIMITS = {
   verdictsMax: 5,
   submitLabel: 60,
   refLength: 500,
+  /** `code` without `from`/`to`, and the longest excerpt a `ref` shows. */
+  excerptLines: 200,
+  /** Lines of context each side of a single-line `ref`. */
+  refContextLines: 3,
 } as const;
 
 /** The tool input's serialised JSON schema must stay under this (plan D7). */
