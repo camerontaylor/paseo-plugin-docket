@@ -160,6 +160,22 @@ describe("refs", () => {
     const prose = await loadEvidence(doc("see `lnk.txt:1` and `nothere.ts:2`"), { cwd: dir });
     expect(prose.ok && prose.evidence.warnings).toHaveLength(2);
   });
+  it("a ref written in prose and again as a structured ref is still refused when it leads outside", async () => {
+    const dir = makeRepo({ "a.ts": lines(3) });
+    const out = tempDir();
+    write(out, "s.txt", "s\n");
+    symlinkSync(path.join(out, "s.txt"), path.join(dir, "lnk.txt"));
+    const item = { id: "a", title: "A", ref: "lnk.txt:1" };
+    const questions: SurfaceDocument["questions"] = [{ id: "r", kind: "review", prompt: "p", items: [item] }];
+    const proseFirst = await loadEvidence(doc("see `lnk.txt:1`", { questions }), { cwd: dir });
+    expect(proseFirst).toMatchObject({ ok: false, reason: "outside" });
+    if (!proseFirst.ok) expect(proseFirst.problems[0].pointer).toBe("/questions/0/items/0/ref");
+    const planFirst = await loadEvidence(doc([{ t: "plan", steps: [{ id: "s1", title: "t", ref: "lnk.txt:1" }] }, "see `lnk.txt:1`"]), { cwd: dir });
+    expect(planFirst).toMatchObject({ ok: false, reason: "outside" });
+    // and a missing file written both ways stays a warning
+    const missing = await loadEvidence(doc("see `new.ts:1`", { questions: [{ id: "r", kind: "review", prompt: "p", items: [{ id: "a", title: "A", ref: "new.ts:1" }] }] }), { cwd: dir });
+    expect(missing.ok).toBe(true);
+  });
   it("reads each distinct ref once", async () => {
     const dir = makeRepo({ "a.ts": lines(30) });
     const r = await loadEvidence(doc("`a.ts:5` and `a.ts:5` and `a.ts:20`"), { cwd: dir });

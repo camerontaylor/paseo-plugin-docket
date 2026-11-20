@@ -110,6 +110,31 @@ describe("refs in a document", () => {
   });
 });
 
+describe("a ref seen both ways keeps its strict handling", () => {
+  const review = (ref: string) => ({ id: "r", kind: "review" as const, prompt: "p", items: [{ id: "a", title: "A", ref }] });
+  const one = (doc: SurfaceDocument) => collectRefs(doc).map((f) => [f.ref, f.lenient, f.at]);
+  it("prose first, then a structured ref", () => {
+    const doc: SurfaceDocument = { v: 1, summary: "s", context: "see `x/a.ts:4`", questions: [review("x/a.ts:4")] };
+    expect(one(doc)).toEqual([["x/a.ts:4", false, "/questions/0/items/0/ref"]]);
+  });
+  it("structured first, then prose", () => {
+    const doc: SurfaceDocument = { v: 1, summary: "s", context: "see `x/a.ts:4`", questions: [review("x/a.ts:4")] };
+    expect(one({ ...doc, context: undefined, view: "see `x/a.ts:4`", questions: [review("x/a.ts:4")] })).toEqual([["x/a.ts:4", false, "/questions/0/items/0/ref"]]);
+    const planFirst: SurfaceDocument = { v: 1, summary: "s", view: [{ t: "plan", steps: [{ id: "s1", title: "t", ref: "x/a.ts:4" }] }, "later `x/a.ts:4`"] };
+    expect(one(planFirst)).toEqual([["x/a.ts:4", false, "/view/0/steps/0/ref"]]);
+  });
+  it("across block kinds: prose in a step detail, then a review item; a files entry after prose in markdown", () => {
+    const a: SurfaceDocument = { v: 1, summary: "s", view: [{ t: "plan", steps: [{ id: "s1", title: "t", detail: "`x/a.ts:4`" }] }], questions: [review("x/a.ts:4")] };
+    expect(one(a).map((f) => f[1])).toEqual([false]);
+    const b: SurfaceDocument = { v: 1, summary: "s", view: ["`y/b.ts:2-3`", { t: "plan", steps: [{ id: "s1", title: "t", files: ["y/b.ts:2-3"] }] }] };
+    expect(one(b).map((f) => f[1])).toEqual([false]);
+  });
+  it("two structured, or two prose, are each kept once", () => {
+    const doc: SurfaceDocument = { v: 1, summary: "s", view: "`p/c.ts:1` `p/c.ts:1`", questions: [review("p/d.ts:1"), review("p/d.ts:1")] };
+    expect(one(doc).map((f) => [f[0], f[1]])).toEqual([["p/c.ts:1", true], ["p/d.ts:1", false]]);
+  });
+});
+
 describe("limits and comparison", () => {
   it("one file is refused over 2 MiB with the numbers", () => {
     expect(itemSizeProblem("a.ts", LIMITS.loadedFileBytes)).toBeNull();

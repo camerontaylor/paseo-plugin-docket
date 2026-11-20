@@ -151,11 +151,21 @@ export function refsInMarkdown(text: string): string[] {
 /** Every `ref` and `path:line` the document points at, in reading order, each ref once. */
 export function collectRefs(doc: SurfaceDocument): FoundRef[] {
   const out: FoundRef[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, FoundRef>();
   const add = (at: string, ref: string, lenient: boolean): void => {
-    if (seen.has(ref)) return;
-    seen.add(ref);
-    out.push({ at, ref, lenient });
+    const have = seen.get(ref);
+    if (have) {
+      // Seen before as prose, now as a structured ref: it keeps its place in the order but is strict,
+      // and its error points at the structured field.
+      if (have.lenient && !lenient) {
+        have.lenient = false;
+        have.at = at;
+      }
+      return;
+    }
+    const found: FoundRef = { at, ref, lenient };
+    seen.set(ref, found);
+    out.push(found);
   };
   const prose = (at: string, text: unknown): void => {
     if (typeof text === "string") for (const r of refsInMarkdown(text)) add(at, r, true);
