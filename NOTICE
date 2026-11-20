@@ -8,5 +8,6 @@ License, Version 2.0: https://github.com/anh-chu/paseo-plugin-genui
 
 Files carried over from it, as they stand or adapted:
   shared/hermes-syntax.test.ts
+  server/evidence/confine.ts (the confined-read pattern: resolve links, check the root, open without following)
 
 Further carried files will be listed here as later slices add them.
