@@ -1,4 +1,4 @@
-// Fixture test: node scripts/summarize.test.mjs
+// Fixture test: node scripts/summarize.check.mjs
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -19,4 +19,4 @@ assert.equal(out.p2Truncated.length, 1);
 const text = execFileSync("node", [join(dir, "summarize.mjs"), join(dir, "fixture.jsonl")], { encoding: "utf8" });
 assert.match(text, /call=call-B #1 label=Claude-plugin-reload/);
 assert.match(text, /TRUNCATED/);
-console.log("summarize fixture test: ok");
+console.log("summarize fixture check: ok");

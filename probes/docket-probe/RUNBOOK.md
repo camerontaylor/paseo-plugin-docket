@@ -6,7 +6,7 @@ Read results with the summary script, never from the screen:
 
     node probes/docket-probe/scripts/summarize.mjs [path-to-report.jsonl] [--json]
 
-The summary lists every P2 observation (time, copy, callId, observation number, label) before the aggregates; `--json` has `p2Observations`. Self-test: `node probes/docket-probe/scripts/summarize.test.mjs`.
+The summary lists every P2 observation (time, copy, callId, observation number, label) before the aggregates; `--json` has `p2Observations`. Self-test: `node probes/docket-probe/scripts/summarize.check.mjs`.
 
 Built against 0.16.0-beta.2: it uses only SDK methods that build has, and records a missing one
 (`missing:<method>`) instead of failing. There is no workspace-row-badge method in that build; the
