@@ -78,7 +78,9 @@ export default function contribute(client: PluginClientContext) {
   );
 
   // P2: observe every tool_call item; report only ones for the echo tool or carrying the marker.
-  const seen = new Set<string>();
+  // Every invocation is an observation; a replay after reopen/restart must show up, so nothing is de-duplicated.
+  // Bound: the first 50 observations per callId are reported, then every 50th.
+  const observations = new Map<string, number>();
   attempt("timelineTransformer", "addTimelineTransformer", () =>
     client.addTimelineTransformer({
       id: "tool-call-probe",
@@ -91,12 +93,14 @@ export default function contribute(client: PluginClientContext) {
           const hasMarker = text.includes(MARKER);
           const named = String(item.name).includes(ECHO_TOOL);
           if (!hasMarker && !named) return undefined;
-          const key = `${item.callId}|${item.status}|${phase}|${hasMarker}`;
-          if (seen.has(key)) return undefined;
-          seen.add(key);
+          const n = (observations.get(item.callId) ?? 0) + 1;
+          observations.set(item.callId, n);
+          if (n > 50 && n % 50 !== 0) return undefined;
           report("tool_call", {
             hostId: copy.hostId,
             callId: item.callId,
+            observation: n,
+            observedAt: Date.now(),
             name: item.name,
             status: item.status,
             phase,

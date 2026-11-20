@@ -2,7 +2,7 @@ import { defineRpc, defineSubscription } from "@getpaseo/plugin";
 import { z } from "zod";
 
 /** Bump on every edit so a stale copy shows up in the report as a different bundle version. */
-export const BUNDLE_VERSION = "0.1.1";
+export const BUNDLE_VERSION = "0.1.2";
 export const PLUGIN_ID = "docket-probe";
 export const ECHO_TOOL = "docket_probe_echo";
 export const MARKER = "DOCKET_PROBE_MARKER ok 7f3a9c1e";

@@ -51,7 +51,7 @@ What to read (per `p1` row in the summary):
 The tool `docket_probe_echo({note?, delayMs?})` is added to every new agent session by a
 `agent.session_open` hook and returns `DOCKET_PROBE_MARKER ok 7f3a9c1e` then `echo: <note>`. A
 client transformer on `tool_call` items reports `name`, `status`, `phase`, `detailType` and
-`hasMarker` (the marker found in `detail.output`) for echo-tool calls. Open an app window for the
+`hasMarker` (the marker found in `detail.output`), plus a per-callId `observation` counter and `observedAt`, for echo-tool calls. Every transformer invocation is reported (first 50 per callId, then every 50th), so a replay after reopen, restart or reload shows as a higher `observation` for the same `callId` (or a new `copyId`). Open an app window for the
 duration (the transformer runs in the client).
 
 Prompt for each agent: *"Call the tool docket_probe_echo with note `<label>` and delayMs 20000, then tell me what it returned."*
