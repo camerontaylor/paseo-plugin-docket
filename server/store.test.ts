@@ -340,6 +340,70 @@ describe("start scan", () => {
     await expect(fs.readFile(path.join(dir, "evidence", record.id, "x.txt"), "utf8")).resolves.toBe("keep");
   });
 
+  it.each([
+    ["draft value", { drafts: { queue: { version: 1, value: [null] } } }],
+    ["comment", { comments: { "plan.step": null } }],
+    ["block item", { blockItems: { plan: [null] } }],
+    ["snapshot", { snapshots: { code: null } }],
+    ["delivery", { deliveries: [null] }],
+    ["document question", { document: { ...DOC, questions: [null] } }],
+  ])("excludes a malformed %s from summaries and preserves its files", async (_name, fields) => {
+    const first = await open();
+    const { record } = must(await first.create({ agentId: "ag1", document: DOC, evidence: { "x.txt": "keep" } }));
+    const file = path.join(dir, "surfaces", record.id, "record.json");
+    const body = JSON.stringify({ ...record, ...fields });
+    await fs.writeFile(file, body);
+
+    const restarted = await open();
+    expect(restarted.summaries()).toEqual([]);
+    expect(restarted.unreadable).toEqual([{ surfaceId: record.id, file, reason: "not a valid record" }]);
+    await expect(fs.readFile(file, "utf8")).resolves.toBe(body);
+    await expect(fs.readFile(path.join(dir, "evidence", record.id, "x.txt"), "utf8")).resolves.toBe("keep");
+  });
+
+  it.each([
+    ["question delivery reference", "queue", { delivery: "1" }],
+    ["review-item delivery reference", "chk.a", { delivery: "1" }],
+    ["answer other text", "queue", { answer: { at: "2026-11-21T10:00:00Z", other: { toString: null } } }],
+    ["review-item detail", "chk.a", { detail: { toString: null } }],
+  ])("rejects a malformed %s on restart", async (_name, target, fields) => {
+    const first = await open();
+    const { record } = must(await first.create({ agentId: "ag1", document: DOC, evidence: { "x.txt": "keep" } }));
+    await answered(first, record.id, [target], false);
+    const pending = first.get(record.id)!;
+    const entry = target === "queue" ? pending.questions.queue : pending.questions.chk.items!.a;
+    Object.assign(entry, fields);
+    const file = path.join(dir, "surfaces", record.id, "record.json");
+    const body = JSON.stringify(pending);
+    await fs.writeFile(file, body);
+
+    const reopened = await open();
+    expect(reopened.get(record.id)).toBeUndefined();
+    expect(reopened.unreadable).toEqual([{ surfaceId: record.id, file, reason: "not a valid record" }]);
+    expect(reopened.decisions({ text: "keep" })).toEqual([]);
+    await expect(fs.readFile(file, "utf8")).resolves.toBe(body);
+    await expect(fs.readFile(path.join(dir, "evidence", record.id, "x.txt"), "utf8")).resolves.toBe("keep");
+  });
+
+  it("loads a compacted legacy delivery without optional queue or comment metadata", async () => {
+    const first = await open();
+    const { record } = must(await first.create({ agentId: "ag1", document: DOC }));
+    await answered(first, record.id);
+    clock += 31 * 86_400_000;
+    expect(await first.compactDue()).toEqual([record.id]);
+
+    const file = path.join(dir, "surfaces", record.id, "record.json");
+    const legacy = first.get(record.id)!;
+    const [{ sentComments, enqueued, transport, ...delivery }] = legacy.deliveries;
+    const body = { ...legacy, deliveries: [delivery] };
+    await fs.writeFile(file, JSON.stringify(body));
+
+    const restarted = await open();
+    expect(restarted.unreadable).toEqual([]);
+    expect(restarted.get(record.id)).toEqual(body);
+    expect((await restarted.deleteDecision(record.id, "queue")).ok).toBe(true);
+  });
+
   it("aborts startup before sweeping evidence when the surfaces directory cannot be listed", async () => {
     const first = await open();
     const { record } = must(await first.create({ agentId: "ag1", document: DOC, evidence: { "x.txt": "keep" } }));

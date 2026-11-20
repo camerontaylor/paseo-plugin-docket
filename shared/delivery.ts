@@ -1,4 +1,4 @@
-import type { Delivery } from "./record";
+import { queueMayHoldDelivery, type Delivery } from "./record";
 
 export type DeliveryTransport = "direct" | "queue";
 export type AgentDeliveryState = "missing" | "archived" | "busy" | "ready";
@@ -25,12 +25,12 @@ export function deliveryAction({
   const queue = transport === "queue";
   if (d.text === "") return "wait";
   if (d.state === "delivered") return queue && item === "uncertain" ? "deliverAndRemove" : "wait";
-  const failedInQueue = d.state === "failed" && queue && d.enqueued && d.transport === "queue";
+  const failedInQueue = d.state === "failed" && queue && d.transport === "queue" && queueMayHoldDelivery(d);
   const heldWithAttempt = d.state === "held" && (d.enqueued || d.transport);
   if (inTimeline && (d.state === "queued" || d.state === "uncertain" || heldWithAttempt || failedInQueue)) {
     return queue && item === "uncertain" ? "deliverAndRemove" : "deliver";
   }
-  if (d.state === "held") return queue && (d.enqueued || item !== "absent" || (d.transport === "queue" && d.enqueued === undefined)) ? "removeHeld" : "wait";
+  if (d.state === "held") return queue && (queueMayHoldDelivery(d) || item !== "absent") ? "removeHeld" : "wait";
   if (d.state === "removed") return "wait";
   if (d.state === "failed") {
     return failedInQueue && item === "absent" && agent !== "missing" && agent !== "archived" ? "remove" : "wait";
