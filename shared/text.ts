@@ -88,10 +88,15 @@ function recommendedIds(q: ChoiceQuestion): string[] {
   return Array.isArray(q.recommend) ? q.recommend : [q.recommend];
 }
 
-function questionText(q: Question, number: number): string {
+function questionText(q: Question, number: number, showTarget: boolean): string {
   const out: string[] = [];
   if (q.kind === "choice") {
-    out.push(`${number}. ${q.id}: ${q.prompt}${q.multi ? ", pick several" : ""}`);
+    let pick = "";
+    if (q.multi) {
+      const lo = q.min ?? 0;
+      pick = q.max === undefined ? (lo ? `, pick at least ${lo}` : ", pick several") : lo === q.max ? `, pick ${lo}` : `, pick ${lo} to ${q.max}`;
+    }
+    out.push(`${number}. ${q.id}: ${q.prompt}${pick}${q.other === false ? ", no custom answer" : ""}`);
     const parts = q.options.map(optionParts);
     const width = Math.max(...parts.map((p) => p.id.length));
     const rec = recommendedIds(q);
@@ -112,7 +117,8 @@ function questionText(q: Question, number: number): string {
     else if (q.recommend) {
       rec = `  (recommended: ${Object.keys(q.recommend).map((k) => `${k} ${(q.recommend as Record<string, string>)[k]}`).join(", ")})`;
     }
-    out.push(`${number}. ${q.id}: ${q.prompt}, per item: ${verdicts}${rec}`);
+    const target = showTarget && q.of ? `, of ${q.of}` : "";
+    out.push(`${number}. ${q.id}: ${q.prompt}${target}, per item: ${verdicts}${rec}`);
     if (q.items) {
       for (const item of reviewItems(q as ReviewQuestion)) {
         out.push(`   ${item.id}  ${item.title}${item.ref ? "  " + item.ref : ""}`);
@@ -123,14 +129,27 @@ function questionText(q: Question, number: number): string {
   return out.join("\n");
 }
 
-/** The document's text form (spec 27.5). */
+/**
+ * The document's text form (spec 27.5).
+ *
+ * Every field the validator accepts is rendered except these, which carry no
+ * reading content: `v`; `submit` (button label and mode); a question's `label`
+ * (the short name used in deliveries; the id and prompt are shown), `note` and
+ * a review's `comment` (flags for what the form offers); a text question's
+ * `placeholder`; `after` ids are shown but `children` nesting is by indent.
+ */
 export function renderText(doc: SurfaceDocument, ctx: RenderContext = {}): string {
   const head = [doc.summary];
   if (doc.context) head.push(doc.context);
   if (doc.meanwhile === "other_work") head.push("Meanwhile: carry on with work that does not depend on the answers.");
+  if (doc.revises) head.push(`Revises ${doc.revises}.`);
+  const blocks = viewBlocks(doc);
   const sections = [head.join("\n")];
-  for (const block of viewBlocks(doc)) sections.push(blockText(block, ctx));
-  if (doc.questions?.length) sections.push(doc.questions.map((q, i) => questionText(q, i + 1)).join("\n"));
+  for (const block of blocks) sections.push(blockText(block, ctx));
+  // A review's target is named only when more than one block has items to review;
+  // with one, "of" can only mean that block (and spec 27.5's example omits it).
+  const showTarget = blocks.filter((b) => typeof b !== "string" && (b.t === "plan" || b.t === "changes")).length > 1;
+  if (doc.questions?.length) sections.push(doc.questions.map((q, i) => questionText(q, i + 1, showTarget)).join("\n"));
   return sections.join("\n\n");
 }
 

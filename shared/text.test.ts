@@ -192,4 +192,32 @@ describe("nothing the agent wrote is dropped from the text form", () => {
       expect(changes).toContain("files are read when the surface is shown");
     }
   });
+
+  it("names a review's target block when two blocks could be meant", () => {
+    const plans = (of: string) => ({
+      v: 1, summary: "S", context: "C",
+      view: [{ t: "plan", id: "first", steps: [{ id: "s1", title: "A" }] }, { t: "plan", id: "second", steps: [{ id: "s1", title: "B" }] }],
+      questions: [{ id: "r", kind: "review", prompt: "P", of, recommend: { s1: "approve" } }],
+    });
+    expect(validateDocument(plans("first")).ok).toBe(true);
+    expect(validateDocument(plans("second")).ok).toBe(true);
+    const a = renderText(plans("first") as never);
+    const b = renderText(plans("second") as never);
+    expect(a).not.toBe(b);
+    expect(a).toContain("1. r: P, of first, per item");
+    expect(b).toContain("of second");
+  });
+
+  it("renders revises, selection bounds and fixed options", () => {
+    const text = renderText({
+      v: 1, summary: "S", context: "C", revises: "s_abc123",
+      questions: [
+        { id: "m", kind: "choice", prompt: "M", multi: true, min: 2, max: 3, other: false, options: ["a", "b", "c"] },
+        { id: "n", kind: "choice", prompt: "N", multi: true, min: 1, options: ["a"] },
+      ],
+    } as never);
+    expect(text).toContain("Revises s_abc123.");
+    expect(text).toContain("1. m: M, pick 2 to 3, no custom answer");
+    expect(text).toContain("2. n: N, pick at least 1");
+  });
 });
