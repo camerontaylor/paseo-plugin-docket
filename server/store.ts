@@ -322,9 +322,12 @@ export async function openStore(options: StoreOptions = {}): Promise<Store> {
     }
   }
 
-  /** Nothing left worth keeping: every decision deleted, nothing open, nothing awaiting delivery. */
+  /** Remove only surfaces with deleted decisions and no open questions, comments, or pending deliveries. */
   function removable(record: SurfaceRecord): boolean {
-    return allDecisionsDeleted(record) && !hasOpenQuestion(record) && record.deliveries.every((d) => d.state === "delivered" || d.text === "");
+    return allDecisionsDeleted(record)
+      && !hasOpenQuestion(record)
+      && Object.keys(record.comments).length === 0
+      && record.deliveries.every((d) => d.state === "delivered" || d.text === "");
   }
 
   function apply(id: string, command: Command): Promise<StoreResult> {

@@ -21,7 +21,7 @@ export interface Summary {
   createdAt: string;
   resolvedAt: string | null;
   openQuestions: number;
-  /** Deliveries not yet delivered (queued, held, uncertain, failed, removed). */
+  /** Non-redacted deliveries still awaiting delivery or eligible for retry. */
   pendingDeliveries: number;
   replacedBy: string | null;
   revises: string | null;
@@ -40,7 +40,7 @@ export function summaryOf(record: SurfaceRecord): Summary {
     createdAt: record.createdAt,
     resolvedAt: record.resolvedAt,
     openQuestions: ids.filter((id) => record.questions[id].state === "open").length,
-    pendingDeliveries: record.deliveries.filter((d) => d.state !== "delivered").length,
+    pendingDeliveries: record.deliveries.filter((d) => d.state !== "delivered" && d.text !== "").length,
     replacedBy: record.replacedBy,
     revises: record.revises,
     compacted: record.compactedAt !== null,

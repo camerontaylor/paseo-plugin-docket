@@ -458,6 +458,36 @@ describe("events.jsonl", () => {
 });
 
 describe("review findings on PR 5", () => {
+  it("retains a delivered block comment and evidence after deleting the last decision", async () => {
+    const store = await open();
+    const at = new Date(clock).toISOString();
+    const { record } = must(await store.create({
+      agentId: "ag1",
+      document: {
+        v: 1,
+        summary: "Mailer rollout",
+        questions: [DOC.questions![0]],
+        view: [{ t: "plan", steps: [{ id: "step", title: "Set up the queue" }] }],
+      },
+      evidence: { "x.txt": "e" },
+    }));
+    const id = record.id;
+    must(await store.apply(id, { kind: "setDraft", target: "queue", draft: { value: "bullmq", note: "delete this note" }, baseVersion: 0, now: at }));
+    must(await store.apply(id, { kind: "setComment", on: "plan.step", text: "keep this comment", baseVersion: 0, now: at }));
+    must(await store.apply(id, { kind: "send", targets: [{ target: "queue", version: 1 }], comments: [{ on: "plan.step", version: 1 }], now: at }));
+    must(await store.apply(id, { kind: "updateDelivery", n: 1, to: "delivered", now: at, receivedText: "delete this note" }));
+    const comment = store.get(id)?.comments["plan.step"];
+
+    must(await store.deleteDecision(id, "queue"));
+
+    const reopened = await open();
+    expect(reopened.get(id)?.comments["plan.step"]).toEqual(comment);
+    expect(reopened.get(id)?.deliveries[0]).toMatchObject({ state: "delivered", text: "" });
+    expect(reopened.decisions()).toEqual([]);
+    expect(await fs.readFile(path.join(dir, "surfaces", id, "record.json"), "utf8")).not.toContain("delete this note");
+    await expect(fs.readFile(path.join(dir, "evidence", id, "x.txt"), "utf8")).resolves.toBe("e");
+  });
+
   it("keeps the record while a delivery is pending after its last decision is deleted, then removes it once delivered", async () => {
     const store = await open();
     const { record } = must(await store.create({ agentId: "ag1", document: DOC, evidence: { "x.txt": "e" } }));

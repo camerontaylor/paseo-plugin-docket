@@ -47,6 +47,16 @@ describe("summaryOf", () => {
   it("reports an archived surface with open questions as orphaned", () => {
     expect(summaryOf(run(build(), { kind: "holdOnArchive", now: "2026-11-02T00:00:00.000Z" })).status).toBe("orphaned");
   });
+
+  it("counts retryable removed deliveries and excludes redacted ones", () => {
+    const now = "2026-11-02T00:00:00.000Z";
+    let r = run(build(), { kind: "setDraft", target: "queue", draft: { value: "bullmq" }, baseVersion: 0, now });
+    r = run(r, { kind: "send", targets: [{ target: "queue", version: 1 }], now });
+    r = run(r, { kind: "updateDelivery", n: 1, to: "removed", now });
+    expect(summaryOf(r).pendingDeliveries).toBe(1);
+    r = run(r, { kind: "deleteDecisions", questions: ["queue"], now });
+    expect(summaryOf(r)).toMatchObject({ openQuestions: 1, pendingDeliveries: 0 });
+  });
 });
 
 describe("decisions", () => {
