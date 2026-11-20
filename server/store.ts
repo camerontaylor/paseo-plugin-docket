@@ -274,7 +274,13 @@ export async function openStore(options: StoreOptions = {}): Promise<Store> {
   }
 
   async function create(request: CreateRequest): Promise<StoreResult> {
-    return locked(CREATE_LOCK, async () => {
+    // A replacement holds the revised surface's lock throughout, so a deletion cannot remove it halfway.
+    const revisesKey = request.document.revises;
+    return locked(CREATE_LOCK, () => (revisesKey === undefined ? createLocked(request) : locked(revisesKey, () => createLocked(request))));
+  }
+
+  async function createLocked(request: CreateRequest): Promise<StoreResult> {
+    {
       const revisesId = request.document.revises;
       const revised = revisesId !== undefined ? (records.get(revisesId) ?? null) : null;
       const id = newSurfaceId(random, (candidate) => records.has(candidate) || unreadable.some((u) => u.surfaceId === candidate));
@@ -308,19 +314,17 @@ export async function openStore(options: StoreOptions = {}): Promise<Store> {
       // A replacement starts open; only then does the old surface close.
       if (revised) {
         crashAt("replace:new-written", id);
-        await locked(revised.id, async () => {
-          const current = records.get(revised.id) as SurfaceRecord;
-          const closed = applyCommand(current, { kind: "closeReplaced", by: id, now: iso() });
-          if (closed.ok && closed.record !== current) await persist(closed.record);
-        });
+        const current = records.get(revised.id) as SurfaceRecord;
+        const closed = applyCommand(current, { kind: "closeReplaced", by: id, now: iso() });
+        if (closed.ok && closed.record !== current) await persist(closed.record);
       }
       return made;
-    });
+    }
   }
 
   /** Nothing left worth keeping: every decision deleted, nothing open, nothing awaiting delivery. */
   function removable(record: SurfaceRecord): boolean {
-    return allDecisionsDeleted(record) && !hasOpenQuestion(record) && record.deliveries.every((d) => d.state === "delivered");
+    return allDecisionsDeleted(record) && !hasOpenQuestion(record) && record.deliveries.every((d) => d.state === "delivered" || d.text === "");
   }
 
   function apply(id: string, command: Command): Promise<StoreResult> {

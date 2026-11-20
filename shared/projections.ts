@@ -93,8 +93,17 @@ export function decisionsOf(record: SurfaceRecord): Decision[] {
     } else if (q.answer && !q.answer.skipped) {
       at = q.answer.at;
     } else continue;
-    const delivery = q.delivery ?? null;
-    const d = delivery === null ? undefined : record.deliveries.find((x) => x.n === delivery);
+    // Every delivery that carried an answer; the decision shows the first one still outstanding.
+    const ns: number[] = [];
+    if (q.items) {
+      for (const itemId of Object.keys(q.items)) {
+        const it = q.items[itemId];
+        if (it.answer && !it.answer.skipped && it.delivery !== undefined && ns.indexOf(it.delivery) < 0) ns.push(it.delivery);
+      }
+    } else if (q.delivery !== undefined) ns.push(q.delivery);
+    const carriers = ns.map((n) => record.deliveries.find((x) => x.n === n)).filter((x): x is NonNullable<typeof x> => x !== undefined);
+    const d = carriers.find((x) => x.state !== "delivered") ?? carriers[0];
+    const delivery = d ? d.n : (q.delivery ?? null);
     out.push({
       surfaceId: record.id,
       questionId: id,

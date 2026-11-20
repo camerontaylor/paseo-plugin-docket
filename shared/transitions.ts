@@ -71,7 +71,8 @@ export type RefusalCode =
   | "unknown-delivery"
   | "bad-delivery-transition"
   | "agent-archived" // Retry while the agent is archived
-  | "delivery-pending" // a decision whose delivery is not yet delivered
+  | "delivery-pending" // a decision whose delivery is still in the queue
+  | "delivery-redacted" // Retry of a delivery whose text the user deleted
   | "not-resolved" // compaction or deletion of something still open
   | "invalid"; // a malformed command
 
@@ -161,11 +162,12 @@ export function blockItemsOf(doc: SurfaceDocument, changeItems: Record<string, I
   return out;
 }
 
-function newQuestionRecord(q: Question, items: Record<string, ItemInfo[]>): QuestionRecord | { missing: string } {
+function newQuestionRecord(q: Question, items: Record<string, ItemInfo[]>): QuestionRecord | { missing: string } | { empty: string } {
   const base = { kind: q.kind, label: questionLabel(q), prompt: q.prompt, state: "open" as const };
   if (q.kind !== "review") return base;
   const list: ItemInfo[] | undefined = q.of !== undefined ? own(items, q.of) : reviewItems(q);
   if (!list) return { missing: q.of ?? q.id };
+  if (!list.length) return { empty: q.of ?? q.id };
   const rec: Record<string, ItemRecord> = {};
   for (const item of list) {
     rec[item.id] = item.detail ? { state: "open", title: item.title, detail: item.detail } : { state: "open", title: item.title };
@@ -199,6 +201,9 @@ export function createRecord(input: CreateInput): Result {
   const questions: Record<string, QuestionRecord> = {};
   for (const q of doc.questions ?? []) {
     const made = newQuestionRecord(q, items);
+    if ("empty" in made) {
+      return refuse("missing-items", `question ${q.id} reviews block ${made.empty}, which has no items to review`);
+    }
     if ("missing" in made) {
       return refuse("missing-items", `question ${q.id} reviews block ${made.missing}, whose items were not loaded`);
     }
@@ -884,7 +889,8 @@ function updateDelivery(record: SurfaceRecord, cmd: UpdateDelivery): Result {
   if (cmd.to === "queued" && d.state !== "queued") {
     return refuse("bad-delivery-transition", `delivery ${cmd.n} goes back to queued only through Retry`);
   }
-  const patch = cmd.patch ?? {};
+  // A delivery the user deleted keeps no text, so a late observation cannot bring it back.
+  const patch = d.text === "" ? {} : (cmd.patch ?? {});
   const next: Delivery = { ...d };
   if (patch.attempts !== undefined) next.attempts = patch.attempts;
   if (patch.enqueued !== undefined) next.enqueued = patch.enqueued;
@@ -912,6 +918,7 @@ export interface RetryDelivery {
 function retryDelivery(record: SurfaceRecord, cmd: RetryDelivery): Result {
   const d = findDelivery(record, cmd.n);
   if (!d) return refuse("unknown-delivery", `this surface has no delivery ${cmd.n}`);
+  if (d.text === "") return refuse("delivery-redacted", `delivery ${cmd.n} was deleted by the user and cannot be sent again`);
   if (record.orphanedAt) return refuse("agent-archived", `the agent is archived; delivery ${cmd.n} stays held until it is restored`);
   if (d.state === "delivered" || d.state === "queued") {
     return refuse("bad-delivery-transition", `delivery ${cmd.n} is ${d.state}; only a held, failed, removed or uncertain one is retried`);
@@ -940,27 +947,56 @@ export interface DeleteDecisions {
 function deleteDecisions(record: SurfaceRecord, cmd: DeleteDecisions): Result {
   const all = cmd.questions === undefined;
   const ids = cmd.questions ?? Object.keys(record.questions);
-  const questions = { ...record.questions };
-  const pending = (n: number | undefined): boolean => n !== undefined && record.deliveries.some((d) => d.n === n && d.state !== "delivered");
-  const gone: string[] = [];
+  // Candidates: questions that hold a decision, and the answered items of each.
+  const cand: Record<string, string[]> = {};
   for (const id of ids) {
-    const q = own(questions, id);
+    const q = own(record.questions, id);
     if (!q) return refuse("unknown-target", `${JSON.stringify(id)} is not a question of this surface`);
     if (q.deleted) continue;
-    const answeredItems = q.items ? Object.keys(q.items).filter((i) => q.items?.[i].answer && q.items[i].answer?.skipped !== true) : [];
-    const hasDecision = q.items ? answeredItems.length > 0 : q.answer !== undefined && q.answer.skipped !== true;
-    if (!hasDecision) continue;
-    // A pending delivery still carries the text; it is not deleted behind the queue's back.
-    const carriers = q.items ? answeredItems.map((i) => q.items?.[i].delivery) : [q.delivery];
-    if (carriers.some(pending)) {
-      if (all) continue;
-      return refuse("delivery-pending", `${JSON.stringify(id)} is in a delivery that has not been delivered yet; delete it once it is`);
+    const answered = q.items ? Object.keys(q.items).filter((i) => q.items?.[i].answer && q.items[i].answer?.skipped !== true) : [];
+    const has = q.items ? answered.length > 0 : q.answer !== undefined && q.answer.skipped !== true;
+    if (has) cand[id] = answered;
+  }
+  const carries = (id: string): number[] => {
+    const q = record.questions[id];
+    const ns = q.items ? (cand[id] ?? []).map((i) => q.items?.[i].delivery) : [q.delivery];
+    return ns.filter((n): n is number => n !== undefined);
+  };
+  // A delivery still in the daemon's queue (queued, uncertain) cannot be recalled; a held, failed or
+  // removed one can be cancelled, but only when the user deletes every answer it carries.
+  const blocked = (id: string): boolean =>
+    carries(id).some((n) => {
+      const d = findDelivery(record, n);
+      if (!d || d.state === "delivered" || d.text === "") return false;
+      if (d.state === "queued" || d.state === "uncertain") return true;
+      return d.targets.some((t) => {
+        const p = parseTarget(t) as ParsedTarget;
+        const q = own(record.questions, p.question);
+        if (!q || q.deleted) return false;
+        const mine = own(cand, p.question);
+        if (!mine) return q.items ? p.item !== undefined && q.items[p.item]?.answer?.skipped !== true && q.items[p.item]?.answer !== undefined : q.answer?.skipped !== true && q.answer !== undefined;
+        return p.item !== undefined && mine.indexOf(p.item) < 0 && q.items?.[p.item]?.answer !== undefined && q.items[p.item].answer?.skipped !== true;
+      });
+    });
+  for (let again = true; again; ) {
+    again = false;
+    for (const id of Object.keys(cand)) {
+      if (!blocked(id)) continue;
+      if (!all) return refuse("delivery-pending", `${JSON.stringify(id)} is in a delivery that is still queued; delete it once it is delivered`);
+      delete cand[id];
+      again = true;
     }
+  }
+  const gone = Object.keys(cand);
+  if (!gone.length) return done(record);
+  const questions = { ...record.questions };
+  for (const id of gone) {
+    const q = record.questions[id];
     if (q.items) {
       const items: Record<string, ItemRecord> = {};
       for (const itemId of Object.keys(q.items)) {
         const item = q.items[itemId];
-        if (answeredItems.indexOf(itemId) < 0) {
+        if (cand[id].indexOf(itemId) < 0) {
           items[itemId] = item;
           continue;
         }
@@ -973,20 +1009,24 @@ function deleteDecisions(record: SurfaceRecord, cmd: DeleteDecisions): Result {
     } else {
       questions[id] = { kind: q.kind, label: q.label, prompt: "", state: q.state, deleted: true, ...(q.delivery !== undefined ? { delivery: q.delivery } : {}) };
     }
-    gone.push(id);
   }
-  if (!gone.length) return done(record);
   // A delivery's text is a copy of every answer it carried: it goes when any of them is deleted.
+  // One that was never delivered is cancelled with it (state removed), so Retry cannot resend nothing.
   const deliveries = record.deliveries.map((d) => {
-    if (d.state !== "delivered" || d.text === "") return d;
+    if (d.text === "") return d;
     const touched = d.targets.some((t) => {
       const p = parseTarget(t) as ParsedTarget;
       const q = own(questions, p.question);
       return q !== undefined && (q.deleted === true || (p.item !== undefined && own(q.items ?? {}, p.item)?.deleted === true));
     });
     if (!touched) return d;
-    const next = { ...d, text: "" };
+    const next: Delivery = { ...d, text: "" };
     delete next.receivedText;
+    delete next.lastError;
+    if (d.state !== "delivered") {
+      next.state = "removed";
+      next.updatedAt = cmd.now;
+    }
     return next;
   });
   return done(bump(record, { questions, deliveries }));

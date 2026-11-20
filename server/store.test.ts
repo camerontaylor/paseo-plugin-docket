@@ -507,3 +507,20 @@ describe("review findings on PR 5", () => {
     for (const f of files) expect(await fs.readFile(f, "utf8")).not.toContain("cheaper to run");
   });
 });
+
+describe("replacement and deletion race", () => {
+  it("a deletion started from the new record's change callback runs after the old surface is closed", async () => {
+    const store = await open();
+    const old = must(await store.create({ agentId: "ag1", document: DOC })).record;
+    await answered(store, old.id, ["queue", "chk.a", "chk.b"]);
+    let deleting: Promise<unknown> = Promise.resolve();
+    store.onChange((e) => {
+      if (e.surfaceId !== old.id && !e.removed) deleting = store.apply(old.id, { kind: "deleteDecisions", now: new Date(clock).toISOString() });
+    });
+    const next = await store.create({ agentId: "ag1", document: { ...DOC, revises: old.id } });
+    expect(next.ok).toBe(true);
+    await deleting;
+    expect(store.list().some((r) => r.revises === old.id)).toBe(true);
+    expect(store.get(old.id)).toBeUndefined();
+  });
+});
