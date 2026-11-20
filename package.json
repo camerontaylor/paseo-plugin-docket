@@ -1,0 +1,38 @@
+{
+  "name": "paseo-plugin-docket",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Paseo plugin: durable agent questions and plan review.",
+  "keywords": ["paseo", "paseo-plugin"],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/camerontaylor/paseo-plugin-docket.git"
+  },
+  "files": [
+    "paseo-plugin.json",
+    "OVERVIEW.md",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "index.client.tsx",
+    "index.server.ts",
+    "client/",
+    "server/",
+    "shared/"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "0.16.0-beta.2",
+    "@types/node": "^24.0.0",
+    "@types/react": "~19.2.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11",
+    "zod": "^4.4.3"
+  }
+}
