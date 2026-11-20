@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { LIMITS } from "./limits";
 import { deliveryMessage, itemNoun, renderText, truncateRendered } from "./text";
 import { utf8Bytes } from "./ids";
+import { validateDocument } from "./validate";
 
 // Spec 27.5.
 const SPEC_DOC = {
@@ -165,13 +166,30 @@ describe("nothing the agent wrote is dropped from the text form", () => {
     expect(render([{ t: "code", s: "+a", diff: true }])).toContain("```diff");
   });
 
-  it("every validated view renders without throwing", () => {
-    const views = [
+  it("every view the validator accepts renders without throwing; the ones it refuses are not rendered", () => {
+    const accepted = [
       { t: "changes", paths: ["src/", "lib/"] },
       { t: "changes" },
       { t: "code", file: "a.ts", from: 3 },
       { t: "plan", steps: [{ id: "s1", title: "T", files: "a.ts", after: [] }] },
     ];
-    for (const v of views) expect(() => render([v])).not.toThrow();
+    const refused = [{ t: "changes", paths: "src/" }];
+    const doc = (v: unknown) => ({ v: 1, summary: "S", view: [v] });
+    for (const v of accepted) {
+      const r = validateDocument(doc(v));
+      expect(r.problems, JSON.stringify(v)).toEqual([]);
+      expect(() => renderText(r.document!)).not.toThrow();
+    }
+    for (const v of refused) expect(validateDocument(doc(v)).ok, JSON.stringify(v)).toBe(false);
+  });
+
+  it("a block id that names an inherited property finds no evidence", () => {
+    for (const id of ["constructor", "toString", "__proto__"]) {
+      const code = renderText({ v: 1, summary: "S", view: [{ t: "code", id, file: "a.ts" }] } as never, { code: {} });
+      expect(code).toContain("a.ts");
+      expect(code).not.toContain("```");
+      const changes = renderText({ v: 1, summary: "S", view: [{ t: "changes", id }] } as never, { changes: {} });
+      expect(changes).toContain("files are read when the surface is shown");
+    }
   });
 });

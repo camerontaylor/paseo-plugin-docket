@@ -7,7 +7,6 @@ import { deliveryMessageId, isItemId, isOptionId, isSurfaceId, newSurfaceId, utf
 import { validateDocument } from "./validate";
 
 const fixture = (name: string): Doc => JSON.parse(readFileSync(path.join(__dirname, "fixtures", name), "utf8"));
-const clone = (d: Doc): Doc => JSON.parse(JSON.stringify(d));
 
 describe("the base fixture", () => {
   it("is valid with no warnings", () => {
@@ -64,8 +63,7 @@ describe("spec examples (section 20)", () => {
     expect(r.ok).toBe(false);
     expect(r.problems).toEqual([
       expect.objectContaining({ pointer: "/view/t", stage: 3, message: expect.stringContaining("`canvas` is not available yet (planned for stage 3)") }),
-      expect.objectContaining({ pointer: "/submit/label", stage: undefined }),
-    ].slice(0, 1));
+    ]);
   });
 });
 
@@ -301,12 +299,6 @@ describe("ids and limits (27.1)", () => {
     expect(utf8Bytes("€")).toBe(3);
     expect(utf8Bytes("😀")).toBe(4);
     expect(utf8Bytes("😀é€a")).toBe(Buffer.byteLength("😀é€a"));
-  });
-  it("clone helper keeps fixtures independent", () => {
-    const a = base();
-    const b = clone(a);
-    b.v = 9;
-    expect(a.v).toBe(1);
   });
 });
 

@@ -36,6 +36,11 @@ export interface RenderContext {
 
 const MINUS = "−";
 
+/** Evidence is keyed by block id; an id like `constructor` must not find an inherited property. */
+function own<T>(dict: Record<string, T> | undefined, key: string): T | undefined {
+  return dict && Object.prototype.hasOwnProperty.call(dict, key) ? dict[key] : undefined;
+}
+
 function planLines(steps: PlanStep[], indent: string, out: string[]): void {
   for (const step of steps) {
     const parts = [step.id, step.title, `[${step.status ?? "todo"}]`];
@@ -62,11 +67,11 @@ function blockText(block: Block, ctx: RenderContext): string {
     planLines(block.steps, "  ", out);
   } else if (block.t === "code") {
     if (block.file) out.push("  " + codeRange(block.file, block.from, block.to));
-    const body = block.s ?? ctx.code?.[id];
+    const body = block.s ?? own(ctx.code, id);
     if (body !== undefined) out.push("```" + (block.lang ?? (block.diff ? "diff" : "")), body.replace(/\n$/, ""), "```");
   } else {
     out.push("  " + (block.of ?? "worktree") + (block.paths?.length ? "  " + block.paths.join(", ") : ""));
-    const files = ctx.changes?.[id];
+    const files = own(ctx.changes, id);
     if (!files) out.push("  (files are read when the surface is shown)");
     for (const file of files ?? []) {
       const name = file.status === "renamed" && file.oldPath ? `${file.oldPath} -> ${file.path}` : file.path;

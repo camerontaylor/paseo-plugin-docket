@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LIMITS, TOOL_SCHEMA_MAX_BYTES } from "./limits";
+import { TOOL_SCHEMA_MAX_BYTES } from "./limits";
 import { utf8Bytes } from "./ids";
 import { SHOW_INPUT_SCHEMA, showSchemaBytes } from "./tool-schema";
 
@@ -22,9 +22,5 @@ describe("docket_show input schema (D7)", () => {
     expect(root.required).toEqual(["surface"]);
     expect(Object.keys(root.properties)).toEqual(["surface"]);
     expect(root.properties.surface.type).toEqual(["object", "string"]);
-  });
-
-  it("states the limits it mentions", () => {
-    expect(LIMITS.questions).toBe(12);
   });
 });
