@@ -101,7 +101,7 @@ export interface Store {
   deleteDecision(surfaceId: string, questionId: string): Promise<StoreResult>;
   deleteAgentDecisions(agentId: string): Promise<number>;
   /** Compacts every record whose retention period has passed; returns the ids. */
-  compactDue(): Promise<string[]>;
+  compactDue(retentionDays?: number): Promise<string[]>;
   /** Closes the surface a new one revises (repair is also done at start). */
   onChange(listener: (event: ChangeEvent) => void): () => void;
   recordEvent(event: string, fields?: Record<string, string | number | boolean | null>): Promise<void>;
@@ -126,7 +126,7 @@ export async function openStore(options: StoreOptions = {}): Promise<Store> {
   const root = options.root ?? defaultStoreRoot();
   const now = options.now ?? (() => new Date());
   const random = options.random ?? defaultRandom;
-  const retentionDays = options.retentionDays ?? DEFAULT_RETENTION_DAYS;
+  const defaultRetentionDays = options.retentionDays ?? DEFAULT_RETENTION_DAYS;
   const recordEvents = options.recordEvents ?? true;
   const crashAt = options.crashAt ?? (() => undefined);
   const surfacesDir = path.join(root, "surfaces");
@@ -400,7 +400,7 @@ export async function openStore(options: StoreOptions = {}): Promise<Store> {
     return count;
   }
 
-  async function compactDue(): Promise<string[]> {
+  async function compactDue(retentionDays = defaultRetentionDays): Promise<string[]> {
     const done: string[] = [];
     for (const record of listRecords()) {
       const at = compactableAt(record, retentionDays);

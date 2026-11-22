@@ -178,3 +178,20 @@ it("returns healthy results after a stalled decision search reaches its deadline
     unavailable: ["stalled"],
   });
 });
+
+it("discards decisions from a source replaced while the merged search is pending", async () => {
+  const hub = createHub();
+  const old = fakeClient("a");
+  const pending = Promise.withResolvers<{ hostId: string; result: Decision[] }>();
+  const other = fakeClient("b");
+  other.rpc.mockReturnValueOnce(pending.promise);
+  hub.update(old.transport, initial("a"));
+  hub.update(other.transport, initial("b"));
+
+  const searched = searchHostDecisions(hub, ["a", "b"], {});
+  await old.rpc.mock.results[0].value;
+  hub.update(fakeClient("a").transport, initial("a"));
+  pending.resolve({ hostId: "b", result: [] });
+
+  expect(await searched).toEqual({ decisions: [], unavailable: ["a"] });
+});

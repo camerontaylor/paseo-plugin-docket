@@ -42,3 +42,27 @@ it("publishes searches and coalesces refreshes during sustained unrelated writes
     vi.useRealTimers();
   }
 });
+
+it("refreshes after the only change arrived during a search", async () => {
+  vi.useFakeTimers();
+  const hub = createHub();
+  const first = Promise.withResolvers<string>();
+  const search = vi.fn(async () => "updated result").mockReturnValueOnce(first.promise);
+  const publish = vi.fn();
+  const stop = watchDecisionSearch(hub.subscribe, search, publish);
+
+  try {
+    await vi.advanceTimersByTimeAsync(200);
+    expect(search).toHaveBeenCalledTimes(1);
+    hub.update({ rpc: vi.fn() }, { kind: "snapshot", hostId: "host", summaries: [] });
+    first.resolve("initial result");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(publish).toHaveBeenLastCalledWith("initial result");
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(publish).toHaveBeenLastCalledWith("updated result");
+  } finally {
+    stop();
+    vi.useRealTimers();
+  }
+});

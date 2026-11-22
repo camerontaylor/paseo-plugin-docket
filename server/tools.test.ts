@@ -70,15 +70,17 @@ describe("Docket host settings and attachment failures", () => {
         read: vi.fn()
           .mockResolvedValueOnce({ status: "ready", revision: "missing", values: schema.parse({}) })
           .mockResolvedValueOnce({ status: "invalid", revision: "broken", error: "invalid settings" })
-          .mockRejectedValueOnce(new Error("read failed")),
+          .mockRejectedValueOnce(new Error("read failed"))
+          .mockResolvedValueOnce({ status: "ready", revision: "missing", values: schema.parse({}) }),
       }),
     } as unknown as PluginServerContext;
-    const readHostSettings = registerToolSettings(server);
+    const { readToolSettings: readHostSettings, readRetentionDays } = registerToolSettings(server);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
       expect(await readHostSettings()).toEqual(settings);
       expect(await readHostSettings()).toMatchObject({ agentTools: true, allowToolPermissions: false });
       expect(await readHostSettings()).toMatchObject({ agentTools: false, allowToolPermissions: false });
+      expect(await readRetentionDays()).toBe(30);
       expect(warn).toHaveBeenCalledWith("[docket] could not read host settings");
     } finally {
       warn.mockRestore();

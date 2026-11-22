@@ -9,7 +9,7 @@ it("sweeps at startup, retries after an error and drains an active sweep on stop
     const compactDue = vi.fn<() => Promise<string[]>>()
       .mockRejectedValueOnce(new Error("store temporarily unavailable"))
       .mockReturnValueOnce(active.promise);
-    const stop = startRetention(async () => ({ compactDue }));
+    const stop = startRetention(async () => ({ compactDue }), async () => 30);
     await vi.advanceTimersByTimeAsync(0);
     expect(compactDue).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledOnce();
