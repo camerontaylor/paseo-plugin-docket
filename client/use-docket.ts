@@ -9,11 +9,11 @@ export function useDocketInbox(confirmedMissing?: ReadonlySet<string>, scope?: P
 }
 
 /** Read beside a fetched surface and refetch whenever its observed revision changes. */
-export function useSurfaceRevision(hostId: string, surfaceId: string) {
+export function useSurfaceRevision(hostId: string, surfaceId: string | undefined) {
   const hub = getHub();
   const read = () => {
     const host = hub.getSnapshot().get(hostId);
-    return host && `${host.snapshotNumber}:${host.revisions.get(surfaceId) ?? ""}`;
+    return surfaceId !== undefined && host ? `${host.snapshotNumber}:${host.revisions.get(surfaceId) ?? ""}` : undefined;
   };
   return useSyncExternalStore(hub.subscribe, read);
 }

@@ -8,6 +8,8 @@ import { canComment, own, type Delivery, type DraftContent, type ItemRecord, typ
 import { draftPreview, openTargets, recommendation, recommendations, sendableTargets, submittedPreview } from "./question-drafts";
 import { boundReviews, retainedItemComments, sendableComments } from "../shared/block-view";
 import { ItemReference, SurfaceBlocks, SurfaceMarkdown } from "./surface-blocks";
+import { reviewAddress, type RevisionItem } from "../shared/revision-view";
+import { useRevisionView } from "./use-revision-view";
 import { useQuestionActions } from "./use-question-actions";
 
 const Theme = createContext<PluginHostProps["theme"]["colors"] | null>(null);
@@ -94,6 +96,23 @@ function DraftPreview({ draft }: { draft?: DraftContent | { text: string } | nul
   return <Copy selectable>{draftPreview(draft)}</Copy>;
 }
 
+function ItemHistory({ item }: { item?: RevisionItem }) {
+  if (!item) return null;
+  const prior = item.earlier;
+  return <View style={styles.stack}>
+    {item.mark && <Copy muted>{item.mark}</Copy>}
+    {prior && item.mark !== "Removed" && prior.title !== item.title &&
+      <Copy selectable muted>{`Earlier title · ${prior.title}`}</Copy>}
+    {prior?.feedback.map(({ prompt, answer, draft }, index) => <View key={index} style={styles.stack}>
+      <Copy selectable muted>{prompt}</Copy>
+      {answer && <><Copy muted>Earlier review</Copy><Copy selectable>{submittedPreview(answer)}</Copy></>}
+      {draft && <><Copy muted>Earlier unsent review draft</Copy><DraftPreview draft={draft} /></>}
+    </View>)}
+    {prior?.comment && <><Copy muted>Earlier sent item comment</Copy><Copy selectable>{prior.comment}</Copy></>}
+    {prior?.draftComment && <><Copy muted>Earlier unsent item comment</Copy><Copy selectable>{prior.draftComment}</Copy></>}
+  </View>;
+}
+
 type Actions = ReturnType<typeof useQuestionActions>;
 
 function TargetControls({ question, target, item, actions, disabled }: {
@@ -169,6 +188,7 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
   hostId: string; theme: PluginHostProps["theme"]; record: SurfaceRecord;
   refresh: () => Promise<SurfaceRecord | null | undefined>;
 }) {
+  const { earlier, comparison, loading, evidencePending } = useRevisionView(hostId, record);
   const actions = useQuestionActions(hostId, record, refresh);
   const [ref] = useAgents({ hosts: [hostId], where: (agent) => agent.id === record.agentId });
   const wait = useAgent(ref ?? record.agentId, (agent): AgentWait => {
@@ -213,6 +233,7 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
     const delivery = record.deliveries.find((entry) => entry.n === comment?.delivery);
     const reviews = bindings.get(block) ?? [];
     return <>
+      <ItemHistory item={comparison?.current.get(on)} />
       {reviews.map((id) => {
         const state = own(record.questions[id].items, item);
         return state && <View key={id} style={styles.stack}>
@@ -231,6 +252,12 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
   }
 
   return <Theme.Provider value={theme.colors}>
+    {record.revises && <View style={styles.stack}>
+      <Copy muted>{earlier ? `Replaces · ${earlier.summary}`
+        : loading ? "Loading earlier surface…" : "Earlier surface unavailable"}</Copy>
+      {evidencePending ? <Copy muted>Comparing saved snapshots…</Copy>
+        : comparison?.incomplete && <Copy muted>Some item evidence is unavailable for comparison.</Copy>}
+    </View>}
     <SurfaceBlocks record={record} hostId={hostId} theme={theme} feedback={feedback} reviewPrompt={reviewPrompt}>
     <View style={styles.stack}>
       {Object.entries(record.questions).map(([id, entry]) => {
@@ -247,6 +274,7 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
                 <Copy bold>{state.title}</Copy>
                 {!!state.detail && <SurfaceMarkdown text={state.detail} />}
                 {!!source?.ref && <ItemReference reference={source.ref} />}
+                <ItemHistory item={comparison?.current.get(reviewAddress(id, item))} />
                 {reviewItem(id, item, state)}
               </View>;
             })}
@@ -256,6 +284,13 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
           </> : <State entry={entry} record={record} target={id} wait={wait} />}
         </View>;
       })}
+      {!!comparison?.removed.length && <View style={[styles.section, { borderColor: theme.colors.border }]}>
+        <Copy bold>Earlier items</Copy>
+        {comparison.removed.map((item) => <View key={item.key} style={styles.stack}>
+          <Copy bold selectable>{item.title}</Copy>
+          <ItemHistory item={item} />
+        </View>)}
+      </View>}
       {orphaned && <Copy muted>Agent stopped</Copy>}
       {retainedComments.map(({ on, title, text }) => <View key={on} style={styles.stack}>
         <Copy bold>{title}</Copy>
@@ -281,15 +316,20 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
       {!!actions.error && <Text accessibilityLiveRegion="polite" style={{ color: theme.colors.statusDanger }}>{actions.error}</Text>}
       {actions.unsaved && !actions.comparison.length && <Button label="Retry saving drafts"
         disabled={actions.pending || orphaned} onPress={() => void actions.retryDrafts()} />}
-      {actions.comparison.map(({ target, viewed, current }) => <View key={target} style={styles.stack}>
-        <Copy bold>{target}</Copy>
-        <Copy muted>Your draft</Copy><DraftPreview draft={viewed} />
-        <Copy muted>Stored draft</Copy><DraftPreview draft={current} />
-        {actions.unsaved && <View style={styles.row}>
-          <Button label="Keep my draft" disabled={actions.pending || orphaned} onPress={() => actions.resolveDraft(target, true)} />
-          <Button label="Use stored draft" disabled={actions.pending || orphaned} onPress={() => actions.resolveDraft(target, false)} />
-        </View>}
-      </View>)}
+      {actions.comparison.map(({ target, viewed, current, cannotKeep }) => {
+        const copyOnly = cannotKeep || (!record.document && !!viewed);
+        return <View key={target} style={styles.stack}>
+          <Copy bold>{target}</Copy>
+          <Copy muted>{copyOnly ? "Your unsaved draft · Select text to copy" : "Your draft"}</Copy>
+          <DraftPreview draft={viewed} />
+          <Copy muted>Stored draft</Copy><DraftPreview draft={current} />
+          {actions.unsaved && <View style={styles.row}>
+            {!copyOnly && <Button label="Keep my draft" disabled={actions.pending || orphaned} onPress={() => actions.resolveDraft(target, true)} />}
+            <Button label={copyOnly ? "Discard unsaved edit" : "Use stored draft"}
+              disabled={actions.pending || (!copyOnly && orphaned)} onPress={() => actions.resolveDraft(target, false)} />
+          </View>}
+        </View>;
+      })}
     </View>
     </SurfaceBlocks>
   </Theme.Provider>;

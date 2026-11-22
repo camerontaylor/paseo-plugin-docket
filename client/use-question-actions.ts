@@ -13,6 +13,7 @@ interface DraftComparison {
   target: string;
   viewed: DraftContent | null;
   current: Conflict["current"];
+  cannotKeep?: boolean;
 }
 
 const discardedMessage = {
@@ -58,7 +59,11 @@ export function useQuestionActions(
     // Keep a buffered comment visible in the comparison/retry UI if the
     // surface is compacted before the write reaches the server.
     if (target.startsWith(commentPrefix) && code === "closed") {
-      setComparison([{ target, viewed: (edits.current.get(target) ?? edit).content, current: null }]);
+      setComparison([{
+        target, viewed: (edits.current.get(target) ?? edit).content,
+        current: null,
+        cannotKeep: true,
+      }]);
       throw new Error(message);
     }
     if (code === "target-not-open" || code === "closed") return code;
@@ -160,7 +165,12 @@ export function useQuestionActions(
   }
 
   return {
-    error, discarded, comparison, pending, unsaved, save, submit, retry,
+    error, discarded, pending, unsaved, save, submit, retry,
+    comparison: comparison.map((entry) => {
+      if (!entry.cannotKeep) return entry;
+      const current = storedDraft(entry.target);
+      return { ...entry, current: current?.comment ? current : null };
+    }),
     retryDrafts: flush,
     saveComment(on: string, text: string) {
       save(commentPrefix + on, text ? { comment: text } : null, true);
@@ -174,7 +184,9 @@ export function useQuestionActions(
       const edit = edits.current.get(target);
       if (!edit) return;
       if (keepMine) {
-        const compared = comparison.find((entry) => entry.target === target)?.current;
+        const conflict = comparison.find((entry) => entry.target === target);
+        if (conflict?.cannotKeep) return;
+        const compared = conflict?.current;
         const stored = storedDraft(target);
         // A cleared draft is returned as null, so its version comes from the refreshed record.
         const version = compared?.version ?? stored?.version ?? 0;

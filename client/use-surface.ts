@@ -6,7 +6,7 @@ import { callHost, getHub } from "./hub";
 import { useSurfaceRevision } from "./use-docket";
 
 /** Fetch one surface and keep it current across clients. */
-export function useSurface(hostId: string, surfaceId: string) {
+export function useSurface(hostId: string, surfaceId: string | undefined) {
   const hub = getHub();
   const hosts = useHosts();
   const online = hosts.find((host) => host.serverId === hostId)?.status === "online";
@@ -17,6 +17,7 @@ export function useSurface(hostId: string, surfaceId: string) {
   const [loaded, setLoaded] = useState<{ key: string; record: SurfaceRecord | null }>();
   const [failure, setFailure] = useState<string>();
   const refresh = useCallback(async () => {
+    if (surfaceId === undefined) return;
     try {
       const record = await callHost(hub, hostId, surfaceGet, { surfaceId });
       // A call that started before a reconnect or deletion can finish afterwards.
