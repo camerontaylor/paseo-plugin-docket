@@ -1,12 +1,13 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { PluginRpcContract } from "@getpaseo/plugin";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { expect, it, vi } from "vitest";
-import { commentSet, decisionsDelete, decisionsSearch, deliveryRetry, draftSet, evidenceGet, send, surfaceGet, surfaces, surfacesList, type SurfaceEvent } from "../shared/rpc";
+import { commentSet, decisionsDelete, decisionsSearch, deliveryRetry, draftSet, evidenceCheck, evidenceGet, send, surfaceGet, surfaces, surfacesList, type SurfaceEvent } from "../shared/rpc";
 import { registerRpc } from "./rpc";
 import { openStore } from "./store";
+import { loadEvidence } from "./evidence/load";
 
 it("projects store revisions and routes validated reads, edits and sends to the store", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "docket-rpc-"));
@@ -14,6 +15,10 @@ it("projects store revisions and routes validated reads, edits and sends to the 
   try {
     let clock = Date.now();
     const store = await openStore({ root, now: () => new Date(clock) });
+    const source = path.join(root, "queue.txt");
+    await writeFile(source, "planned");
+    const loaded = await loadEvidence({ v: 1, summary: "Reference", view: "See `queue.txt:1`" }, { cwd: root });
+    if (!loaded.ok) throw Error("Expected a stored reference");
     const created = await store.create({
       agentId: "agent",
       document: {
@@ -21,8 +26,8 @@ it("projects store revisions and routes validated reads, edits and sends to the 
         questions: [{ id: "answer", kind: "text", prompt: "What?", recommend: "Yes" }],
         view: { t: "plan", id: "plan", steps: [{ id: "step", title: "Step" }] },
       },
-      snapshots: { "1": { name: "1", kind: "file", hash: "hash", readAt: new Date().toISOString(), bytes: 8 } },
-      evidence: { "1": "evidence", "2": "unreferenced" },
+      snapshots: { "1": { ...loaded.evidence.snapshots["1"], cwd: root } },
+      evidence: { ...loaded.evidence.contents, "2": "unreferenced" },
     });
     if (!created.ok) throw Error(created.refusal.message);
     const surfaceId = created.record.id;
@@ -30,7 +35,8 @@ it("projects store revisions and routes validated reads, edits and sends to the 
     const server = { handle: (contract, handle) => handlers.set(contract.name, handle) } as PluginServerContext;
     const retry = vi.fn(() => Promise.resolve(created));
     registerRpc(server, async () => store, async () => ({ retry }));
-    const paseo = { hosts: { list: async () => ({ self: { serverId: "host-a" } }) } };
+    const agent = { cwd: root, workspaceId: null, refresh: async () => ({}) };
+    const paseo = { hosts: { list: async () => ({ self: { serverId: "host-a" } }) }, agents: { ref: () => agent } };
 
     async function call<C extends PluginRpcContract>(contract: C, input: unknown) {
       const invoke = handlers.get(contract.name)!;
@@ -55,9 +61,18 @@ it("projects store revisions and routes validated reads, edits and sends to the 
     const listed = await call(surfacesList, {});
     expect(listed).toEqual(store.summaries());
     expect(JSON.stringify(listed)).not.toMatch(/"drafts"|"document"|"snapshots"/);
-    expect(await call(evidenceGet, { surfaceId, snapshotId: "1" })).toBe("evidence");
+    expect(await call(evidenceGet, { surfaceId, snapshotId: "1" })).toBe("planned");
     expect(await call(evidenceGet, { surfaceId, snapshotId: "2" })).toBeNull();
     expect(evidenceGet.input.safeParse({ surfaceId, snapshotId: "../record.json" }).success).toBe(false);
+
+    expect(await call(evidenceCheck, { surfaceId, snapshotId: "1" })).toEqual({ status: "same" });
+    await writeFile(source, "updated");
+    expect(await call(evidenceCheck, { surfaceId, snapshotId: "1" })).toEqual({ status: "changed", current: "updated" });
+    expect(await call(evidenceGet, { surfaceId, snapshotId: "1" })).toBe("planned");
+    expect(await call(evidenceCheck, { surfaceId, snapshotId: "2" })).toEqual({ status: "unavailable" });
+    agent.cwd = path.dirname(root);
+    expect(await call(evidenceCheck, { surfaceId, snapshotId: "1" })).toEqual({ status: "unavailable" });
+    agent.cwd = root;
 
     const draft = { surfaceId, target: "answer", draft: { value: "Yes" }, baseVersion: 0 };
     expect(await call(draftSet, draft)).toEqual({ version: 1 });

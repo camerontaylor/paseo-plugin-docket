@@ -36,6 +36,7 @@ import {
   type SurfaceRecord,
   DEFAULT_RETENTION_DAYS,
   RECORD_SCHEMA,
+  canComment,
   draftIsEmpty,
   hasOpenQuestion,
   hasOwn,
@@ -90,6 +91,7 @@ export interface TargetProblem {
 
 /** A send that named a version that is no longer the stored one. */
 export interface Conflict {
+  kind?: "comment";
   target: string;
   /** The version the client was looking at. */
   sentVersion: number;
@@ -465,7 +467,7 @@ function itemOfBlock(record: SurfaceRecord, on: string): ItemInfo | undefined {
 }
 
 function setComment(record: SurfaceRecord, cmd: SetComment): Result {
-  if (!hasOpenQuestion(record)) return closedRefusal(record);
+  if (!canComment(record)) return closedRefusal(record);
   const info = itemOfBlock(record, cmd.on);
   if (!info) return refuse("unknown-target", `${JSON.stringify(cmd.on)} is not an item of a block on this surface`);
   const stored = own(record.comments, cmd.on);
@@ -512,11 +514,12 @@ function noun(doc: SurfaceDocument, q: ReviewQuestion): string {
 }
 
 function sendRecord(record: SurfaceRecord, cmd: Send): Result {
-  if (!hasOpenQuestion(record) || !record.document) return closedRefusal(record);
   const doc = record.document;
   const targets = cmd.targets ?? [];
   const sentComments = cmd.comments ?? [];
   const skipList = cmd.skip ?? [];
+  const commentsOnly = sentComments.length > 0 && targets.length === 0 && skipList.length === 0;
+  if (!doc || (!hasOpenQuestion(record) && !(commentsOnly && canComment(record)))) return closedRefusal(record);
   if (targets.length + sentComments.length + skipList.length === 0) {
     return refuse("nothing-to-send", "nothing was named to send; choose answers or comments, or skip what is left");
   }
@@ -605,7 +608,7 @@ function sendRecord(record: SurfaceRecord, cmd: Send): Result {
   for (const entry of sentComments) {
     const stored = own(record.comments, entry.on) as CommentRecord;
     if (stored.version !== entry.version) {
-      conflicts.push({ target: entry.on, sentVersion: entry.version, current: stored.text !== "" && stored.delivery === null ? stored : null });
+      conflicts.push({ kind: "comment", target: entry.on, sentVersion: entry.version, current: stored.text !== "" && stored.delivery === null ? stored : null });
     }
   }
   if (conflicts.length) {

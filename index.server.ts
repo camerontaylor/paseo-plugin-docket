@@ -54,7 +54,7 @@ export default function contribute(server: PluginServerContext) {
       });
   }
 
-  registerRpc(server, getStore, connect);
+  registerRpc(server, getStore, connect, readToolSettings);
 
   const stopHooks = [
     server.before("agent.session_open", ({ request }, { paseo }) => {

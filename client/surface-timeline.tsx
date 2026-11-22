@@ -30,7 +30,7 @@ function SurfaceCard({ host, item, theme, agentId }: PluginTimelineItemProps<z.o
     </>}
     {visible && <View style={unavailable ? { display: "none" } : { gap: 8 }}>
       <Text style={[styles.title, { color: colors.foreground }]}>{visible.summary}</Text>
-      {!!visible.context && <Text style={{ color: colors.foregroundMuted }}>{visible.context}</Text>}
+      {!visible.document && !!visible.context && <Text style={{ color: colors.foregroundMuted }}>{visible.context}</Text>}
       {visible.meanwhile === "other_work" && <Text style={{ color: colors.foregroundMuted }}>The agent can continue work that does not depend on these answers.</Text>}
       <SurfaceQuestions key={JSON.stringify([host.id, surfaceId])} hostId={host.id} record={visible} theme={theme} refresh={refresh} />
     </View>}

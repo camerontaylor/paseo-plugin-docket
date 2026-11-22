@@ -1,11 +1,13 @@
 import type { RpcOutput } from "@getpaseo/plugin";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { commentSet, decisionsDelete, decisionsSearch, deliveryRetry, draftSet, evidenceGet, send, surfaceGet, surfaces, surfacesList, type SurfaceEvent } from "../shared/rpc";
+import { commentSet, decisionsDelete, decisionsSearch, deliveryRetry, draftSet, evidenceCheck, evidenceGet, send, surfaceGet, surfaces, surfacesList, type SurfaceEvent } from "../shared/rpc";
 import { hasOwn } from "../shared/transitions";
 import type { Store, StoreResult } from "./store";
 import type { startDelivery } from "./delivery";
 import type { PaseoApi } from "./delivery-host";
-import { readEvidence } from "./evidence/store";
+import { LIMITS } from "../shared/limits";
+import { agentStorage } from "./tools";
+import { readEvidence, snapshotStatus } from "./evidence/store";
 
 function saved<T>(result: StoreResult, success: (record: Extract<StoreResult, { ok: true }>["record"]) => T) {
   if (result.ok) return success(result.record);
@@ -17,6 +19,7 @@ export function registerRpc(
   server: PluginServerContext,
   getStore: () => Promise<Store>,
   connectDelivery: (paseo: PaseoApi) => Promise<Pick<ReturnType<typeof startDelivery>, "retry">>,
+  readSettings?: () => Promise<{ extraFolders: string[] }>,
 ) {
   let identity: Promise<string> | undefined;
   function identify(paseo: PaseoApi) {
@@ -91,6 +94,37 @@ export function registerRpc(
   server.handle(evidenceGet, ({ surfaceId, snapshotId }, { paseo }) => reply(paseo, (store) => {
     const record = store.get(surfaceId);
     return record && hasOwn(record.snapshots, snapshotId) ? readEvidence(store.root, surfaceId, snapshotId) : null;
+  }));
+  server.handle(evidenceCheck, ({ surfaceId, snapshotId }, { paseo }) => reply(paseo, async (store): Promise<RpcOutput<typeof evidenceCheck>["result"]> => {
+    const record = store.get(surfaceId);
+    if (!record?.document || !hasOwn(record.snapshots, snapshotId)) return { status: "unavailable" };
+    const snapshot = record.snapshots[snapshotId];
+    const kind = snapshot.kind;
+    if (kind !== "file" && kind !== "changes") return { status: "unavailable" };
+    try {
+      const agent = paseo.agents.ref(record.agentId);
+      if (!await agent.refresh()) return { status: "unavailable" };
+      const cwd = agent.cwd;
+      if (!cwd || agent.workspaceId !== record.workspaceId || (snapshot.cwd !== undefined && snapshot.cwd !== cwd)) {
+        return { status: "unavailable" };
+      }
+      const settings = await readSettings?.();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), LIMITS.evidenceBudgetMs);
+      try {
+        const result = await snapshotStatus({ ...snapshot, kind }, {
+          cwd,
+          extraRoots: [agentStorage(record.agentId), "/tmp", ...(settings?.extraFolders ?? [])],
+          signal: controller.signal,
+          includeCurrentRef: true,
+        });
+        return controller.signal.aborted ? { status: "unavailable" } : result;
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch {
+      return { status: "unavailable" };
+    }
   }));
   server.handle(draftSet, ({ surfaceId, ...fields }, { paseo }) => reply(paseo, async (store) => {
     const result = await store.apply(surfaceId, { kind: "setDraft", ...fields, now: new Date().toISOString() });

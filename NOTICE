@@ -11,3 +11,8 @@ Files carried over from it, as they stand or adapted:
   server/evidence/confine.ts (the confined-read pattern: resolve links, check the root, open without following)
 
 Further carried files will be listed here as later slices add them.
+  client/block-code.tsx (Code, Snippet and Diff drawing from client/components/data.tsx)
+  client/block-diagram.tsx (flowchart and sequence drawing from client/components/diagram.tsx)
+  client/block-markdown.tsx (MarkdownText drawing from client/markdown.tsx)
+  client/surface-blocks.tsx (plan item presentation from client/components/widgets.tsx)
+  shared/diagram/{flowchart,layout,markdown,sequence}.ts
