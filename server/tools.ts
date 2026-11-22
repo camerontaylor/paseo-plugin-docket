@@ -79,7 +79,7 @@ export async function attachDocketTools(
   }
 }
 
-function agentStorage(agentId: string): string {
+export function agentStorage(agentId: string): string {
   // The daemon supplies the id. Keep even imported ids in a single directory component.
   return path.join(defaultStoreRoot(), "agents", encodeURIComponent(agentId).replaceAll(".", "%2E"));
 }
@@ -205,7 +205,7 @@ export function createDocketTools(getStore: () => Promise<Store>, readSettings: 
         workspaceId: agent.workspaceId,
         document,
         evidence: evidence.contents,
-        snapshots: Object.fromEntries(Object.entries(evidence.snapshots).map(([id, snapshot]) => [id, { ...snapshot }])),
+        snapshots: Object.fromEntries(Object.entries(evidence.snapshots).map(([id, snapshot]) => [id, { ...snapshot, cwd: agent.cwd }])),
         changeItems,
       });
       if (!created.ok) return failure(`Nothing was shown. ${created.refusal.message}`);

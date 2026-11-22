@@ -1,11 +1,13 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useAgent, useAgents, type PluginHostProps } from "@getpaseo/plugin/client";
-import { optionParts, reviewVerdicts, type Question } from "../shared/document";
+import { optionParts, reviewItems, reviewVerdicts, type Question } from "../shared/document";
 import { itemAddress } from "../shared/ids";
 import { LIMITS } from "../shared/limits";
-import { own, type Delivery, type DraftContent, type ItemRecord, type QuestionRecord, type SurfaceRecord } from "../shared/record";
+import { canComment, own, type Delivery, type DraftContent, type ItemRecord, type QuestionRecord, type SurfaceRecord } from "../shared/record";
 import { draftPreview, openTargets, recommendation, recommendations, sendableTargets, submittedPreview } from "./question-drafts";
+import { boundReviews, retainedItemComments, sendableComments } from "../shared/block-view";
+import { ItemReference, SurfaceBlocks, SurfaceMarkdown } from "./surface-blocks";
 import { useQuestionActions } from "./use-question-actions";
 
 const Theme = createContext<PluginHostProps["theme"]["colors"] | null>(null);
@@ -21,9 +23,9 @@ const styles = StyleSheet.create({
   multiline: { minHeight: 64, textAlignVertical: "top" },
 });
 
-function Copy({ children, muted, bold, lines }: { children: ReactNode; muted?: boolean; bold?: boolean; lines?: number }) {
+function Copy({ children, muted, bold, lines, selectable }: { children: ReactNode; muted?: boolean; bold?: boolean; lines?: number; selectable?: boolean }) {
   const colors = useColors();
-  return <Text numberOfLines={lines} style={[bold && styles.title, { color: muted ? colors.foregroundMuted : colors.foreground }]}>{children}</Text>;
+  return <Text selectable={selectable} numberOfLines={lines} style={[bold && styles.title, { color: muted ? colors.foregroundMuted : colors.foreground }]}>{children}</Text>;
 }
 
 function Button({ label, onPress, disabled, selected, detail, role = "button" }: {
@@ -55,6 +57,12 @@ function Field({ label, value, onChange, disabled, multiline, limit, placeholder
   </View>;
 }
 
+function ItemComment({ value, disabled, onChange }: { value?: string; disabled: boolean; onChange: (text: string) => void }) {
+  const [open, setOpen] = useState(false);
+  if (!open && !value) return <Button label="Comment" disabled={disabled} onPress={() => setOpen(true)} />;
+  return <Field label="Item comment" value={value} disabled={disabled} onChange={onChange} multiline limit={LIMITS.answer} />;
+}
+
 function BoundedText({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
   return <View style={styles.stack}>
@@ -83,7 +91,7 @@ function deliveryLabel(delivery: Delivery, wait: AgentWait) {
 }
 
 function DraftPreview({ draft }: { draft?: DraftContent | { text: string } | null }) {
-  return <Copy>{draftPreview(draft)}</Copy>;
+  return <Copy selectable>{draftPreview(draft)}</Copy>;
 }
 
 type Actions = ReturnType<typeof useQuestionActions>;
@@ -173,11 +181,60 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
   const orphaned = !!record.orphanedAt;
   const disabled = actions.locked || orphaned;
   const sendDisabled = actions.pending || actions.unsaved || orphaned;
-  const submitLabel = record.document?.submit?.label ?? "Send";
+  const submitLabel = !total && !canComment(record) ? "Send item comments" : record.document?.submit?.label ?? "Send";
+
+  const bindings = boundReviews(record);
+  const bound = new Set([...bindings.values()].flat());
+  const comments = sendableComments(record).length;
+  const retainedComments = retainedItemComments(record);
+
+  function reviewItem(id: string, item: string, state: ItemRecord) {
+    const target = itemAddress(id, item);
+    const question = record.document?.questions?.find((q) => q.id === id);
+    return state.state === "open" && question ? <>
+      <Copy muted>Open</Copy>
+      <TargetControls question={question} item={item} target={target} actions={actions} disabled={disabled} />
+    </> : <State entry={state} record={record} target={target} wait={wait} />;
+  }
+
+  function reviewPrompt(block: string) {
+    return bindings.get(block)?.map((id) => {
+      const entry = record.questions[id];
+      return <View key={id} style={styles.stack}>
+        <Copy bold>{entry.prompt}</Copy>
+        {!!entry.closeReason && <BoundedText text={entry.closeReason} />}
+      </View>;
+    });
+  }
+
+  function feedback(block: string, item: string) {
+    const on = itemAddress(block, item);
+    const comment = own(record.comments, on);
+    const delivery = record.deliveries.find((entry) => entry.n === comment?.delivery);
+    const reviews = bindings.get(block) ?? [];
+    return <>
+      {reviews.map((id) => {
+        const state = own(record.questions[id].items, item);
+        return state && <View key={id} style={styles.stack}>
+          {reviews.length > 1 && <Copy muted>{record.questions[id].prompt}</Copy>}
+          {reviewItem(id, item, state)}
+        </View>;
+      })}
+      {!!comment?.text && comment.delivery !== null && <>
+        <Copy muted>Sent item comment</Copy>
+        <Copy>{comment.text}</Copy>
+        {delivery && <Copy muted>{deliveryLabel(delivery, wait)}</Copy>}
+      </>}
+      {canComment(record) && !orphaned && <ItemComment value={actions.comment(on)} disabled={disabled}
+        onChange={(text) => actions.saveComment(on, text)} />}
+    </>;
+  }
 
   return <Theme.Provider value={theme.colors}>
+    <SurfaceBlocks record={record} hostId={hostId} theme={theme} feedback={feedback} reviewPrompt={reviewPrompt}>
     <View style={styles.stack}>
       {Object.entries(record.questions).map(([id, entry]) => {
+        if (bound.has(id)) return null;
         const question = record.document?.questions?.find((question) => question.id === id);
         return <View key={id} style={[styles.section, { borderColor: theme.colors.border }]}>
           <Copy bold>{entry.prompt}</Copy>
@@ -185,14 +242,12 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
           {entry.kind === "review" ? <>
             {entry.state === "open" && <Copy muted>Open</Copy>}
             {Object.entries(entry.items ?? {}).map(([item, state]) => {
-              const target = itemAddress(id, item);
+              const source = question?.kind === "review" ? reviewItems(question).find((entry) => entry.id === item) : undefined;
               return <View key={item} style={styles.stack}>
                 <Copy bold>{state.title}</Copy>
-                {!!state.detail && <Copy muted>{state.detail}</Copy>}
-                {state.state === "open" && question ? <>
-                  <Copy muted>Open</Copy>
-                  <TargetControls question={question} item={item} target={target} actions={actions} disabled={disabled} />
-                </> : <State entry={state} record={record} target={target} wait={wait} />}
+                {!!state.detail && <SurfaceMarkdown text={state.detail} />}
+                {!!source?.ref && <ItemReference reference={source.ref} />}
+                {reviewItem(id, item, state)}
               </View>;
             })}
           </> : entry.state === "open" && question ? <>
@@ -202,8 +257,16 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
         </View>;
       })}
       {orphaned && <Copy muted>Agent stopped</Copy>}
-      {!!total && <View style={styles.row}>
-        <Button label={`${submitLabel} (${count} of ${total})`} disabled={!count || sendDisabled} onPress={() => void actions.submit("send")} />
+      {retainedComments.map(({ on, title, text }) => <View key={on} style={styles.stack}>
+        <Copy bold>{title}</Copy>
+        <Copy muted>Unsent item comment</Copy>
+        <Copy selectable>{text}</Copy>
+        <View style={styles.row}>
+          <Button label="Clear item comment" disabled={actions.pending || actions.unsaved} onPress={() => actions.saveComment(on, "")} />
+        </View>
+      </View>)}
+      {(total > 0 || comments > 0) && <View style={styles.row}>
+        <Button label={`${submitLabel} (${total ? `${count} of ${total}${comments ? " · " : ""}` : ""}${comments ? `${comments} item comment${comments === 1 ? "" : "s"}` : ""})`} disabled={(!count && !comments) || sendDisabled} onPress={() => void actions.submit("send")} />
         {!!recommendations(record).length && <Button label="Accept recommended" disabled={sendDisabled} onPress={() => void actions.submit("recommended")} />}
         {total > count && <Button label="Skip the rest" disabled={sendDisabled} onPress={() => void actions.submit("skip")} />}
       </View>}
@@ -228,5 +291,6 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
         </View>}
       </View>)}
     </View>
+    </SurfaceBlocks>
   </Theme.Provider>;
 }

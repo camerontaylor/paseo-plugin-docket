@@ -61,6 +61,10 @@ export type SurfaceEvent = z.output<typeof surfaces.event>;
 export const surfacesList = rpc("surfaces.list", empty, snapshot.shape.summaries);
 export const surfaceGet = rpc("surface.get", surface, z.custom<SurfaceRecord>(isRecordV1).nullable());
 export const evidenceGet = rpc("evidence.get", surface.extend({ snapshotId: z.string().regex(/^[1-9][0-9]{0,5}$/) }), z.string().nullable());
+export const evidenceCheck = rpc("evidence.check", evidenceGet.input, z.object({
+  status: z.enum(["same", "changed", "gone", "unavailable"]),
+  current: z.string().optional(),
+}));
 export const draftSet = rpc("draft.set", surface.extend({ target: z.string(), draft: draft.nullable(), baseVersion: version }), saved);
 export const commentSet = rpc("comment.set", surface.extend({ on: z.string(), text: z.string().nullable(), baseVersion: version }), saved);
 export const send = rpc("send", surface.extend({

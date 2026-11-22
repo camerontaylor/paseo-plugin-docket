@@ -1,10 +1,13 @@
 import { useRef, useState } from "react";
-import { draftSet, send, deliveryRetry } from "../shared/rpc";
+import { sendableComments } from "../shared/block-view";
+import { commentSet, draftSet, send, deliveryRetry } from "../shared/rpc";
 import { own, type DraftContent, type SurfaceRecord } from "../shared/record";
 import type { Conflict } from "../shared/transitions";
 import { drainDraftWrites, type DraftWriteResult, type Edit } from "./draft-write-queue";
 import { callHost, getHub } from "./hub";
 import { draftWriteInput, openTargets, recommendations, sendableTargets } from "./question-drafts";
+
+const commentPrefix = "comment:";
 
 interface DraftComparison {
   target: string;
@@ -14,7 +17,7 @@ interface DraftComparison {
 
 const discardedMessage = {
   "target-not-open": "An unsaved edit was discarded because its question or review item is no longer open.",
-  closed: "Unsaved edits were discarded because the surface is closed.",
+  closed: "An unsaved edit was discarded because its target is closed.",
 };
 
 export function useQuestionActions(
@@ -36,14 +39,28 @@ export function useQuestionActions(
   const submitting = useRef(false);
   const acknowledged = useRef(new Map<string, number>());
 
+  function storedDraft(target: string) {
+    if (!target.startsWith(commentPrefix)) return own(record.drafts, target);
+    const comment = own(record.comments, target.slice(commentPrefix.length));
+    return comment && { version: comment.version, comment: comment.delivery === null && comment.text ? comment.text : undefined };
+  }
+
   async function write(target: string, edit: Edit): Promise<DraftWriteResult> {
-    const reply = await callHost(hub, hostId, draftSet, draftWriteInput(surfaceId, target, edit.version, edit.content));
+    const reply = target.startsWith(commentPrefix)
+      ? await callHost(hub, hostId, commentSet, { surfaceId, on: target.slice(commentPrefix.length), text: edit.content?.comment ?? null, baseVersion: edit.version })
+      : await callHost(hub, hostId, draftSet, draftWriteInput(surfaceId, target, edit.version, edit.content));
     if ("version" in reply) return reply.version;
     if ("conflict" in reply) {
       setComparison([{ target, viewed: edits.current.has(target) ? edits.current.get(target)!.content : edit.content, current: reply.conflict }]);
       throw new Error("The draft changed on another client. Review both drafts before editing again.");
     }
     const { code, message } = reply.refusal;
+    // Keep a buffered comment visible in the comparison/retry UI if the
+    // surface is compacted before the write reaches the server.
+    if (target.startsWith(commentPrefix) && code === "closed") {
+      setComparison([{ target, viewed: (edits.current.get(target) ?? edit).content, current: null }]);
+      throw new Error(message);
+    }
     if (code === "target-not-open" || code === "closed") return code;
     throw new Error(message);
   }
@@ -77,7 +94,7 @@ export function useQuestionActions(
 
   function save(target: string, content: DraftContent | null, defer = false, baseVersion?: number) {
     if (submitting.current) return;
-    const version = baseVersion ?? edits.current.get(target)?.version ?? acknowledged.current.get(target) ?? own(record.drafts, target)?.version ?? 0;
+    const version = baseVersion ?? edits.current.get(target)?.version ?? acknowledged.current.get(target) ?? storedDraft(target)?.version ?? 0;
     const edit = { content, version };
     edits.current.set(target, edit);
     setOverlay((prior) => new Map(prior).set(target, edit));
@@ -120,9 +137,14 @@ export function useQuestionActions(
         viewed.set(target, content);
         targets.push({ target, version });
       }
-      const result = await callHost(hub, hostId, send, { surfaceId, targets });
+      const comments = sendableComments(record);
+      for (const { on } of comments) viewed.set(commentPrefix + on, storedDraft(commentPrefix + on) ?? null);
+      const result = await callHost(hub, hostId, send, { surfaceId, targets, comments });
       if ("conflict" in result) {
-        setComparison(result.conflict.map(({ target, current }) => ({ target, viewed: viewed.get(target) ?? null, current })));
+        setComparison(result.conflict.map(({ target, current, kind }) => {
+          const key = kind === "comment" ? commentPrefix + target : target;
+          return { target: key, viewed: viewed.get(key) ?? null, current };
+        }));
         throw new Error("Drafts changed on another client. Review both drafts before sending again.");
       }
       if ("refusal" in result) throw new Error(result.refusal.message);
@@ -140,16 +162,23 @@ export function useQuestionActions(
   return {
     error, discarded, comparison, pending, unsaved, save, submit, retry,
     retryDrafts: flush,
+    saveComment(on: string, text: string) {
+      save(commentPrefix + on, text ? { comment: text } : null, true);
+    },
+    comment(on: string) {
+      const edit = overlay.get(commentPrefix + on);
+      return (edit ? edit.content : storedDraft(commentPrefix + on))?.comment;
+    },
     resolveDraft(target: string, keepMine: boolean) {
       if (running.current) return;
       const edit = edits.current.get(target);
       if (!edit) return;
       if (keepMine) {
         const compared = comparison.find((entry) => entry.target === target)?.current;
-        const stored = own(record.drafts, target);
+        const stored = storedDraft(target);
         // A cleared draft is returned as null, so its version comes from the refreshed record.
         const version = compared?.version ?? stored?.version ?? 0;
-        if (!compared && stored && Object.keys(stored).length > 1) {
+        if (!compared && stored && (target.startsWith(commentPrefix) ? !!stored.comment : Object.keys(stored).length > 1)) {
           setComparison([{ target, viewed: edit.content, current: stored }]);
           return;
         }

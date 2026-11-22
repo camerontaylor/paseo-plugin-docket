@@ -211,7 +211,7 @@ describe("setComment", () => {
     expect(r.comments["plan.s1a"]).toEqual({ version: 1, text: "why?", title: "Nested", delivery: null });
   });
 
-  it("refuses unknown items, stale versions, long text and closed surfaces", () => {
+  it("refuses unknown items, stale versions and long text", () => {
     const rec = make(REVIEW);
     expect(refusal(cmt(rec, "plan.zz", "x")).code).toBe("unknown-target");
     expect(refusal(cmt(rec, "constructor.s1", "x")).code).toBe("unknown-target");
@@ -221,7 +221,7 @@ describe("setComment", () => {
     expect(stale.code).toBe("stale-draft");
     expect((stale.current as { text: string }).text).toBe("a");
     expect(refusal(cmt(rec, "plan.s1", "x".repeat(LIMITS.answer + 1))).code).toBe("invalid-draft");
-    expect(refusal(cmt(run(rec, { kind: "close", now: T1 }), "plan.s1", "x")).code).toBe("closed");
+    expect(refusal(cmt(run(rec, { kind: "close", now: T1 }), "plan.zz", "x")).code).toBe("unknown-target");
   });
 });
 
@@ -598,7 +598,7 @@ describe("compact", () => {
     expect(c.document).toBeNull();
     expect(c.snapshots).toEqual({});
     expect(c.blockItems).toEqual({});
-    expect(c.comments).toEqual({});
+    expect(c.comments).toEqual(r.comments);
     expect(c.compactedAt).toBe(later);
     expect(c.questions.chk.items!.i1.answer?.verdict).toBe("approve");
     expect(c.questions.chk.items!.i1.title).toBe("one");

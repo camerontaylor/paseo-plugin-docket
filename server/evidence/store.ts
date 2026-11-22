@@ -9,7 +9,7 @@
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { isSurfaceId } from "../../shared/ids";
-import { type EvidenceStatus, type SnapshotMeta, compareHash } from "../../shared/evidence";
+import { type EvidenceStatus, type SnapshotMeta, compareHash, parseRef, refExcerpt } from "../../shared/evidence";
 import { LIMITS } from "../../shared/limits";
 import { loadChanges } from "./changes";
 import { type FileReader, readConfinedText } from "./confine";
@@ -60,6 +60,7 @@ export async function removeEvidence(dataDir: string, surfaceId: string): Promis
 
 export interface StatusOptions {
   cwd: string;
+  includeCurrentRef?: boolean;
   extraRoots?: readonly string[];
   signal?: AbortSignal;
   limits?: Partial<typeof LIMITS>;
@@ -69,6 +70,7 @@ export interface StatusOptions {
 
 export interface SnapshotStatus {
   status: EvidenceStatus;
+  current?: string;
   /** Why the thing cannot be read any more, when it cannot. */
   detail?: string;
 }
@@ -91,7 +93,11 @@ export async function snapshotStatus(meta: SnapshotMeta, options: StatusOptions)
       maxBytes: limits.loadedFileBytes,
       signal: options.signal,
     });
-    return r.ok ? { status: compareHash(meta.fileHash, r.hash) } : { status: r.reason === "too-large" ? "changed" : "gone", detail: r.message };
+    if (!r.ok) return { status: r.reason === "too-large" ? "changed" : "gone", detail: r.message };
+    const status = compareHash(meta.fileHash, r.hash);
+    const ref = options.includeCurrentRef && status === "changed" && meta.ref && parseRef(meta.ref);
+    const excerpt = ref && refExcerpt(r.text, ref.from, ref.to, limits);
+    return { status, ...(excerpt && excerpt.ok ? { current: excerpt.text } : {}) };
   }
   const r = await loadChanges({ of: meta.of, paths: meta.paths }, { cwd: options.cwd, signal: options.signal, limits, git, readFile: readFileFn });
   return r.ok ? { status: compareHash(meta.hash, r.hash) } : { status: r.reason === "too-large" ? "changed" : "gone", detail: r.message };

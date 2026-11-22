@@ -11,6 +11,7 @@ function fixture() {
     id: "s_abc123", agentId: "agent", now,
     document: {
       v: 1, summary: "Decisions",
+      view: { t: "plan", steps: [{ id: "step", title: "Step" }] },
       questions: ["first", "second", "third"].map((id) => ({ id, kind: "text", prompt: id })),
     },
   });
@@ -74,6 +75,30 @@ describe("draining queued question edits", () => {
     expect(write.mock.calls.map(([target]) => target)).toEqual(["first", "second", "second", "third"]);
   });
 
+  it("preserves a pending item comment after another client answers the last question", async () => {
+    const surface = fixture();
+    for (const target of localEdits().keys()) {
+      expect(surface.write(target, { content: { value: "Other client" }, version: 0 }).ok).toBe(true);
+    }
+    expect(surface.apply({ kind: "send", targets: sendableTargets(surface.read()), now }).ok).toBe(true);
+    const edits = localEdits();
+    edits.set("comment:plan.step", { content: { comment: "Keep this step" }, version: 0 });
+    await drainDraftWrites(edits, new Map(), async (target, edit) => {
+      if (target !== "comment:plan.step") {
+        const result = surface.write(target, edit);
+        if (!result.ok && result.refusal.code === "closed") return "closed";
+        throw new Error("Expected the answer edit to be closed");
+      }
+      const result = surface.apply({
+        kind: "setComment", on: "plan.step", text: edit.content?.comment ?? null, baseVersion: edit.version, now,
+      });
+      if (!result.ok) throw new Error(result.refusal.message);
+      return result.record.comments["plan.step"].version;
+    }, vi.fn());
+    expect(edits.size).toBe(0);
+    expect(surface.read().comments["plan.step"]).toMatchObject({ text: "Keep this step", delivery: null });
+  });
+
   it("clears all unwriteable edits when the whole surface closes", async () => {
     const surface = fixture();
     expect(surface.apply({ kind: "close", now }).ok).toBe(true);
@@ -86,7 +111,7 @@ describe("draining queued question edits", () => {
     const discarded = vi.fn();
     await drainDraftWrites(edits, new Map(), write, discarded);
     expect(edits.size).toBe(0);
-    expect(write).toHaveBeenCalledTimes(1);
-    expect(discarded).toHaveBeenCalledExactlyOnceWith("closed");
+    expect(write).toHaveBeenCalledTimes(3);
+    expect(discarded.mock.calls).toEqual([["closed"], ["closed"], ["closed"]]);
   });
 });

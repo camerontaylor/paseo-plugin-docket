@@ -1,11 +1,14 @@
 import type { RpcOutput } from "@getpaseo/plugin";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { commentSet, decisionsDelete, decisionsSearch, deliveryRetry, draftSet, evidenceGet, send, surfaceGet, surfaces, surfacesList, type SurfaceEvent } from "../shared/rpc";
+import { commentSet, decisionsDelete, decisionsSearch, deliveryRetry, draftSet, evidenceCheck, evidenceGet, send, surfaceGet, surfaces, surfacesList, type SurfaceEvent } from "../shared/rpc";
 import { hasOwn } from "../shared/transitions";
 import type { Store, StoreResult } from "./store";
 import type { startDelivery } from "./delivery";
 import type { PaseoApi } from "./delivery-host";
-import { readEvidence } from "./evidence/store";
+import { LIMITS } from "../shared/limits";
+import { agentStorage } from "./tools";
+import { makeDeadline, TIMED_OUT } from "./evidence/deadline";
+import { readEvidence, snapshotStatus } from "./evidence/store";
 
 function saved<T>(result: StoreResult, success: (record: Extract<StoreResult, { ok: true }>["record"]) => T) {
   if (result.ok) return success(result.record);
@@ -17,6 +20,7 @@ export function registerRpc(
   server: PluginServerContext,
   getStore: () => Promise<Store>,
   connectDelivery: (paseo: PaseoApi) => Promise<Pick<ReturnType<typeof startDelivery>, "retry">>,
+  readSettings?: () => Promise<{ extraFolders: string[] }>,
 ) {
   let identity: Promise<string> | undefined;
   function identify(paseo: PaseoApi) {
@@ -91,6 +95,36 @@ export function registerRpc(
   server.handle(evidenceGet, ({ surfaceId, snapshotId }, { paseo }) => reply(paseo, (store) => {
     const record = store.get(surfaceId);
     return record && hasOwn(record.snapshots, snapshotId) ? readEvidence(store.root, surfaceId, snapshotId) : null;
+  }));
+  server.handle(evidenceCheck, ({ surfaceId, snapshotId }, { paseo }) => reply(paseo, async (store): Promise<RpcOutput<typeof evidenceCheck>["result"]> => {
+    const record = store.get(surfaceId);
+    if (!record?.document || !hasOwn(record.snapshots, snapshotId)) return { status: "unavailable" };
+    const snapshot = record.snapshots[snapshotId];
+    const kind = snapshot.kind;
+    if (typeof snapshot.cwd !== "string" || (kind !== "file" && kind !== "changes")) return { status: "unavailable" };
+    const deadline = makeDeadline(LIMITS.evidenceBudgetMs);
+    const unavailable = { status: "unavailable" } as const;
+    try {
+      const result = await deadline.guard((async () => {
+        const agent = paseo.agents.ref(record.agentId);
+        if (!await agent.refresh() || deadline.signal.aborted) return unavailable;
+        const cwd = agent.cwd;
+        if (!cwd || agent.workspaceId !== record.workspaceId || snapshot.cwd !== cwd) return unavailable;
+        const settings = await readSettings?.();
+        if (deadline.signal.aborted) return unavailable;
+        return snapshotStatus({ ...snapshot, kind }, {
+          cwd,
+          extraRoots: [agentStorage(record.agentId), "/tmp", ...(settings?.extraFolders ?? [])],
+          signal: deadline.signal,
+          includeCurrentRef: true,
+        });
+      })());
+      return result === TIMED_OUT || deadline.signal.aborted ? unavailable : result;
+    } catch {
+      return unavailable;
+    } finally {
+      deadline.stop();
+    }
   }));
   server.handle(draftSet, ({ surfaceId, ...fields }, { paseo }) => reply(paseo, async (store) => {
     const result = await store.apply(surfaceId, { kind: "setDraft", ...fields, now: new Date().toISOString() });

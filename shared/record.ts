@@ -197,6 +197,11 @@ export function hasOpenQuestion(record: SurfaceRecord): boolean {
   return Object.keys(record.questions).some((id) => record.questions[id].state === "open");
 }
 
+/** Whether the card offers an editor for new item feedback. */
+export function canComment(record: SurfaceRecord): boolean {
+  return !!record.document && !record.closed && !record.replacedBy;
+}
+
 /** `open` while any question is open, else `resolved`; `orphaned` when the agent was archived with questions still open. */
 export function surfaceStatus(record: SurfaceRecord): SurfaceStatus {
   if (!hasOpenQuestion(record)) return "resolved";

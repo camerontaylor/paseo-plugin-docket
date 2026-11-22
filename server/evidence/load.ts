@@ -1,3 +1,4 @@
+import { makeDeadline, TIMED_OUT } from "./deadline";
 // Everything `show` reads for one document (spec 7.7): the file behind each
 // `code` block, each `ref`, and each `changes` block, as snapshots with a
 // hash, the commit and a size. All of it shares one deadline (plan S3): when
@@ -73,24 +74,6 @@ export interface LoadOptions {
   readFile?: FileReader;
   git?: GitRunner;
 }
-
-/** A shared deadline: `guard` settles when the work does, or when time is up, whichever is first. */
-function makeDeadline(ms: number): { signal: AbortSignal; guard: <T>(work: Promise<T>) => Promise<T | typeof TIMED_OUT>; stop: () => void } {
-  const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const expired = new Promise<typeof TIMED_OUT>((resolve) => {
-    timer = setTimeout(() => {
-      controller.abort();
-      resolve(TIMED_OUT);
-    }, ms);
-  });
-  return {
-    signal: controller.signal,
-    guard: (work) => Promise.race([work, expired]),
-    stop: () => clearTimeout(timer),
-  };
-}
-const TIMED_OUT = Symbol("timed out");
 
 export async function loadEvidence(doc: SurfaceDocument, options: LoadOptions): Promise<LoadResult> {
   const limits = { ...LIMITS, ...options.limits };

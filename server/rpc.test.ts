@@ -1,12 +1,15 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { PluginRpcContract } from "@getpaseo/plugin";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { expect, it, vi } from "vitest";
-import { commentSet, decisionsDelete, decisionsSearch, deliveryRetry, draftSet, evidenceGet, send, surfaceGet, surfaces, surfacesList, type SurfaceEvent } from "../shared/rpc";
+import { commentSet, decisionsDelete, decisionsSearch, deliveryRetry, draftSet, evidenceCheck, evidenceGet, send, surfaceGet, surfaces, surfacesList, type SurfaceEvent } from "../shared/rpc";
 import { registerRpc } from "./rpc";
-import { openStore } from "./store";
+import { openStore, type Store } from "./store";
+import { loadEvidence } from "./evidence/load";
+import * as confine from "./evidence/confine";
+import { LIMITS } from "../shared/limits";
 
 it("projects store revisions and routes validated reads, edits and sends to the store", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "docket-rpc-"));
@@ -14,6 +17,10 @@ it("projects store revisions and routes validated reads, edits and sends to the 
   try {
     let clock = Date.now();
     const store = await openStore({ root, now: () => new Date(clock) });
+    const source = path.join(root, "queue.txt");
+    await writeFile(source, "planned");
+    const loaded = await loadEvidence({ v: 1, summary: "Reference", view: "See `queue.txt:1`" }, { cwd: root });
+    if (!loaded.ok) throw Error("Expected a stored reference");
     const created = await store.create({
       agentId: "agent",
       document: {
@@ -21,8 +28,8 @@ it("projects store revisions and routes validated reads, edits and sends to the 
         questions: [{ id: "answer", kind: "text", prompt: "What?", recommend: "Yes" }],
         view: { t: "plan", id: "plan", steps: [{ id: "step", title: "Step" }] },
       },
-      snapshots: { "1": { name: "1", kind: "file", hash: "hash", readAt: new Date().toISOString(), bytes: 8 } },
-      evidence: { "1": "evidence", "2": "unreferenced" },
+      snapshots: { "1": { ...loaded.evidence.snapshots["1"], cwd: root } },
+      evidence: { ...loaded.evidence.contents, "2": "unreferenced" },
     });
     if (!created.ok) throw Error(created.refusal.message);
     const surfaceId = created.record.id;
@@ -30,7 +37,8 @@ it("projects store revisions and routes validated reads, edits and sends to the 
     const server = { handle: (contract, handle) => handlers.set(contract.name, handle) } as PluginServerContext;
     const retry = vi.fn(() => Promise.resolve(created));
     registerRpc(server, async () => store, async () => ({ retry }));
-    const paseo = { hosts: { list: async () => ({ self: { serverId: "host-a" } }) } };
+    const agent = { cwd: root, workspaceId: null, refresh: async () => ({}) };
+    const paseo = { hosts: { list: async () => ({ self: { serverId: "host-a" } }) }, agents: { ref: () => agent } };
 
     async function call<C extends PluginRpcContract>(contract: C, input: unknown) {
       const invoke = handlers.get(contract.name)!;
@@ -55,9 +63,18 @@ it("projects store revisions and routes validated reads, edits and sends to the 
     const listed = await call(surfacesList, {});
     expect(listed).toEqual(store.summaries());
     expect(JSON.stringify(listed)).not.toMatch(/"drafts"|"document"|"snapshots"/);
-    expect(await call(evidenceGet, { surfaceId, snapshotId: "1" })).toBe("evidence");
+    expect(await call(evidenceGet, { surfaceId, snapshotId: "1" })).toBe("planned");
     expect(await call(evidenceGet, { surfaceId, snapshotId: "2" })).toBeNull();
     expect(evidenceGet.input.safeParse({ surfaceId, snapshotId: "../record.json" }).success).toBe(false);
+
+    expect(await call(evidenceCheck, { surfaceId, snapshotId: "1" })).toEqual({ status: "same" });
+    await writeFile(source, "updated");
+    expect(await call(evidenceCheck, { surfaceId, snapshotId: "1" })).toEqual({ status: "changed", current: "updated" });
+    expect(await call(evidenceGet, { surfaceId, snapshotId: "1" })).toBe("planned");
+    expect(await call(evidenceCheck, { surfaceId, snapshotId: "2" })).toEqual({ status: "unavailable" });
+    agent.cwd = path.dirname(root);
+    expect(await call(evidenceCheck, { surfaceId, snapshotId: "1" })).toEqual({ status: "unavailable" });
+    agent.cwd = root;
 
     const draft = { surfaceId, target: "answer", draft: { value: "Yes" }, baseVersion: 0 };
     expect(await call(draftSet, draft)).toEqual({ version: 1 });
@@ -119,5 +136,48 @@ it("projects store revisions and routes validated reads, edits and sends to the 
     controller.abort();
     vi.useRealTimers();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("settles a stalled evidence read at the deadline and keeps legacy snapshots frozen", async () => {
+  const cwd = "/workspace";
+  const snapshot = { kind: "file", path: "queue.txt", fileHash: "hash", hash: "excerpt", bytes: 4, readAt: "2026-11-22T12:00:00Z" };
+  const record = {
+    agentId: "agent", workspaceId: null, document: { v: 1, summary: "Review" },
+    snapshots: { "1": { ...snapshot, cwd }, "2": snapshot },
+  };
+  const handlers = new Map<string, (input: unknown, context: unknown) => unknown>();
+  const server = { handle: (contract, handle) => handlers.set(contract.name, handle) } as PluginServerContext;
+  registerRpc(server, async () => ({ get: () => record }) as unknown as Store, async () => ({ retry: vi.fn() }));
+  const refresh = vi.fn(async () => ({}));
+  const paseo = {
+    hosts: { list: async () => ({ self: { serverId: "host-a" } }) },
+    agents: { ref: () => ({ cwd, workspaceId: null, refresh }) },
+  };
+  const check = (snapshotId: string) => handlers.get(evidenceCheck.name)!({ surfaceId: "s_test01", snapshotId }, { paseo });
+  const unavailable = { hostId: "host-a", result: { status: "unavailable" } };
+  await expect(check("2")).resolves.toEqual(unavailable);
+  expect(refresh).not.toHaveBeenCalled();
+
+  let started!: (signal: AbortSignal | undefined) => void;
+  let failRead!: (reason: Error) => void;
+  const reading = new Promise<AbortSignal | undefined>((resolve) => { started = resolve; });
+  const read = vi.spyOn(confine, "readConfinedText").mockImplementationOnce((_path, options) => {
+    started(options.signal);
+    return new Promise((_resolve, reject) => { failRead = reject; });
+  });
+  vi.useFakeTimers();
+  try {
+    const result = check("1");
+    const signal = await reading;
+    expect(signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(LIMITS.evidenceBudgetMs);
+    await expect(result).resolves.toEqual(unavailable);
+    expect(signal?.aborted).toBe(true);
+    failRead(new Error("Late read rejection"));
+    await vi.advanceTimersByTimeAsync(0);
+  } finally {
+    read.mockRestore();
+    vi.useRealTimers();
   }
 });

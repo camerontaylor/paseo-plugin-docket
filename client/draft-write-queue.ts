@@ -17,13 +17,8 @@ export async function drainDraftWrites(
   while (edits.size) {
     const [target, edit] = edits.entries().next().value!;
     const result = await write(target, edit);
-    if (result === "closed") {
-      edits.clear();
-      onDiscard(result);
-      return;
-    }
-    if (result === "target-not-open") {
-      // A newer edit for this same target would also be refused.
+    if (typeof result !== "number") {
+      // An answer can close while a queued item comment remains writable.
       edits.delete(target);
       onDiscard(result);
       continue;
