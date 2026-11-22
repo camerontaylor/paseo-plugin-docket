@@ -1,8 +1,10 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { expect, it, vi } from "vitest";
 import type { Summary } from "../shared/projections";
+import { surfacesList, type SurfaceEvent } from "../shared/rpc";
 import { AGENT_PANEL_ID, agentSurfaces, registerComposerPills } from "./agent-panel-model";
-import { createHub } from "./hub";
+import { callHost, createHub } from "./hub";
+import { startSource } from "./source";
 
 const open: Summary = {
   id: "s_aaaaaa", rev: 1, agentId: "agent", workspaceId: "workspace", summary: "Review",
@@ -54,4 +56,59 @@ it("registers pills for its own host and updates, opens and removes them as surf
   expect(remove).toHaveBeenCalledTimes(3);
   hub.update(client, { kind: "snapshot", hostId: "own", summaries: [newer] });
   expect(addComposerPill).toHaveBeenCalledTimes(3);
+});
+
+it("keeps composer pills bound to their own source through unload", async () => {
+  const hub = createHub();
+
+  function install(hostId: string) {
+    let emit: (event: SurfaceEvent) => void = () => {};
+    const release = vi.fn(async () => {});
+    const remove = vi.fn();
+    const addComposerPill = vi.fn(() => ({ update: vi.fn(), remove }));
+    const client = {
+      async rpc(this: unknown) {
+        expect(this).toBe(client);
+        return { hostId, result: [open] };
+      },
+      subscribe(_contract: unknown, _input: unknown, onEvent: typeof emit) {
+        emit = onEvent;
+        return { ready: Promise.resolve(), release };
+      },
+      addComposerPill,
+      openPanel: vi.fn(),
+    } as unknown as PluginClientContext;
+    const removePills = registerComposerPills(client, hub);
+    const stopSource = startSource(client, hub);
+    return {
+      snapshot: () => emit({ kind: "snapshot", hostId, summaries: [open] }),
+      cleanup() {
+        stopSource();
+        removePills();
+      },
+      addComposerPill, release, remove,
+    };
+  }
+
+  const a = install("a");
+  const b = install("b");
+  try {
+    try {
+      a.snapshot();
+      expect(a.addComposerPill).toHaveBeenCalledOnce();
+      expect(b.addComposerPill).not.toHaveBeenCalled();
+      b.snapshot();
+      expect(b.addComposerPill).toHaveBeenCalledOnce();
+      expect(a.addComposerPill).toHaveBeenCalledOnce();
+      await expect(callHost(hub, "b", surfacesList, {})).resolves.toEqual([open]);
+    } finally {
+      a.cleanup();
+    }
+    expect(a.release).toHaveBeenCalledOnce();
+    expect(a.remove).toHaveBeenCalledOnce();
+    expect(hub.sourceFor("a")).toBeUndefined();
+    expect(b.remove).not.toHaveBeenCalled();
+  } finally {
+    b.cleanup();
+  }
 });
