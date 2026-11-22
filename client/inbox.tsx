@@ -1,5 +1,5 @@
-import { useEffect, useState, type ComponentType } from "react";
-import { ScrollView, Text, TextInput, View } from "react-native";
+import { useEffect, useState, type ComponentType, type ReactNode } from "react";
+import { Keyboard, ScrollView, Text, TextInput, View } from "react-native";
 import { useAgent, useAgents, useWorkspace, useWorkspaces } from "@getpaseo/plugin/client";
 import type { AgentRef, PluginClientContext, PluginHostProps, PluginScreenProps, PluginSidebarItemProps, WorkspaceRef } from "@getpaseo/plugin/client";
 import * as ui from "@getpaseo/plugin/client/ui";
@@ -218,17 +218,33 @@ function InboxQueue({ theme, navigation, controls, inbox }: PluginScreenProps & 
   </ScrollView>;
 }
 
+function InboxPane({ active, children }: { active: boolean; children: ReactNode }) {
+  return <View role="tabpanel" style={{ flex: 1, display: active ? "flex" : "none" }}
+    accessibilityElementsHidden={!active} importantForAccessibility={active ? "auto" : "no-hide-descendants"}
+    pointerEvents={active ? "auto" : "none"}>
+    {children}
+  </View>;
+}
+
 function DocketInbox({ controls, ...props }: PluginScreenProps & { controls: InboxDependencies }) {
   const { theme } = props;
   const inbox = useDocketInbox();
   const [tab, setTab] = useState<"inbox" | "decisions">("inbox");
   const [target, setTarget] = useState<SurfaceTarget>();
+  function selectTab(next: typeof tab) {
+    if (next === tab) return;
+    Keyboard.dismiss();
+    setTab(next);
+  }
   return <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
     <View accessibilityRole="tablist" style={[buttonRow, { padding: 12 }]}>
-      <InboxButton theme={theme} label="Inbox" role="tab" selected={tab === "inbox"} onPress={() => setTab("inbox")} />
-      <InboxButton theme={theme} label="Decisions" role="tab" selected={tab === "decisions"} onPress={() => setTab("decisions")} />
+      <InboxButton theme={theme} label="Inbox" role="tab" selected={tab === "inbox"} onPress={() => selectTab("inbox")} />
+      <InboxButton theme={theme} label="Decisions" role="tab" selected={tab === "decisions"} onPress={() => selectTab("decisions")} />
     </View>
-    {tab === "inbox" ? <InboxQueue {...props} controls={controls} inbox={inbox} /> : <>
+    <InboxPane active={tab === "inbox"}>
+      <InboxQueue {...props} controls={controls} inbox={inbox} />
+    </InboxPane>
+    <InboxPane active={tab === "decisions"}>
       <View style={{ flex: 1, display: target ? "none" : "flex" }}>
         <controls.Decisions theme={theme} openSurface={setTarget} />
       </View>
@@ -240,7 +256,7 @@ function DocketInbox({ controls, ...props }: PluginScreenProps & { controls: Inb
           {...target} theme={theme} controls={controls} fromHistory
           ready={inbox.sources.some((source) => source.serverId === target.hostId && source.docketStatus === "ready")} />
       </ScrollView>}
-    </>}
+    </InboxPane>
   </View>;
 }
 
