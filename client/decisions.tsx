@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useHosts, type PluginScreenProps } from "@getpaseo/plugin/client";
 import { decisionsDelete } from "../shared/rpc";
+import { watchDecisionSearch } from "./decision-search";
 import { callHost, getHub, inboxOf, searchHostDecisions } from "./hub";
 
 type SearchResult = Awaited<ReturnType<typeof searchHostDecisions>>;
@@ -10,7 +11,11 @@ type DeleteTarget = { decision: DecisionRow; all: boolean };
 
 interface DecisionsProps {
   theme: PluginScreenProps["theme"];
+  /** Fetch the surface on hostId. Show an expired-view notice if its document is
+   * compacted, or an unavailable notice if the record cannot be loaded. */
   openSurface(target: { hostId: string; surfaceId: string }): void;
+  /** Hosts affirmatively known to lack Docket. */
+  confirmedMissing?: ReadonlySet<string>;
 }
 
 const PAGE_SIZE = 50;
@@ -19,12 +24,12 @@ function decisionKey({ hostId, surfaceId, questionId }: DecisionRow) {
   return JSON.stringify([hostId, surfaceId, questionId]);
 }
 
-export function Decisions({ theme, openSurface }: DecisionsProps) {
+export function Decisions({ theme, openSurface, confirmedMissing }: DecisionsProps) {
   const { colors } = theme;
   const hub = getHub();
   const snapshot = useSyncExternalStore(hub.subscribe, hub.getSnapshot);
   const hosts = useHosts();
-  const { sources } = inboxOf(snapshot, hosts);
+  const { sources } = inboxOf(snapshot, hosts, confirmedMissing);
   const hostLabels = new Map(hosts.map((host) => [host.serverId, host.label]));
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(PAGE_SIZE);
@@ -39,24 +44,20 @@ export function Decisions({ theme, openSurface }: DecisionsProps) {
   const readyIds = JSON.stringify(sources.filter((host) => host.docketStatus === "ready").map((host) => host.serverId).sort());
 
   useEffect(() => {
-    let active = true;
     setLoading(true);
-    const timer = setTimeout(() => {
-      const hostIds: string[] = JSON.parse(readyIds);
-      void searchHostDecisions(hub, hostIds, { query, limit: limit + 1 }).then((result) => {
-        if (!active) return;
+    const hostIds: string[] = JSON.parse(readyIds);
+    return watchDecisionSearch(
+      hub.subscribe,
+      () => searchHostDecisions(hub, hostIds, { query, limit: limit + 1 }),
+      (result) => {
         setSearch({ ...result, query });
         setLoading(false);
-      });
-    }, 200);
-    return () => {
-      active = false;
-      clearTimeout(timer);
-    };
-  }, [hub, snapshot, readyIds, query, limit, refresh]);
+      },
+    );
+  }, [hub, readyIds, query, limit, refresh]);
 
   const ready = (id: string) => sources.some((host) => host.serverId === id && host.docketStatus === "ready");
-  const unavailable = sources.filter((host) => host.docketStatus !== "ready" || search?.unavailable.includes(host.serverId));
+  const unavailable = sources.filter((host) => host.docketStatus !== "missing" && (host.docketStatus !== "ready" || search?.unavailable.includes(host.serverId)));
   const rows = search?.query === query ? search.decisions.filter((row) => ready(row.hostId)) : [];
   const hostName = (id: string) => hostLabels.get(id) ?? id;
   const foreground = { color: colors.foreground };

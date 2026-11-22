@@ -502,7 +502,9 @@ describe("decisions, search, deletion and compaction", () => {
     const store = await open({ retentionDays: 10 });
     const { record } = must(await store.create({ agentId: "ag1", document: DOC }));
     must(await store.apply(record.id, { kind: "holdOnArchive", now: new Date(clock).toISOString() }));
-    clock += 11 * 86_400_000;
+    clock += 9 * 86_400_000;
+    expect(await store.compactDue()).toEqual([]);
+    clock += 86_400_000;
     expect(await store.compactDue()).toEqual([record.id]);
     expect(store.get(record.id)?.closed?.by).toBe("expired");
   });

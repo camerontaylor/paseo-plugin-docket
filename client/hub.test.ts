@@ -162,3 +162,19 @@ it("uses a slow poll result if the replacement stream has not caught up", async 
   expect(client.streams).toHaveLength(2);
   stop();
 });
+
+it("returns healthy results after a stalled decision search reaches its deadline", async () => {
+  vi.useFakeTimers();
+  const hub = createHub();
+  hub.update({ rpc: vi.fn(() => new Promise<never>(() => {})) },
+    { kind: "snapshot", hostId: "stalled", summaries: [] });
+  const healthy = fakeClient("healthy");
+  hub.update(healthy.transport, { kind: "snapshot", hostId: "healthy", summaries: [] });
+
+  const searched = searchHostDecisions(hub, ["stalled", "healthy"], {});
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(await searched).toEqual({
+    decisions: [{ ...decision, hostId: "healthy" }],
+    unavailable: ["stalled"],
+  });
+});
