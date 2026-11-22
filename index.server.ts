@@ -6,6 +6,7 @@ import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
 import { startDelivery } from "./server/delivery";
 import type { PaseoApi } from "./server/delivery-host";
+import { registerRpc } from "./server/rpc";
 import { openStore } from "./server/store";
 import { attachDocketTools, isDocketPermission, registerToolSettings } from "./server/tools";
 
@@ -51,6 +52,8 @@ export default function contribute(server: PluginServerContext) {
         throw error;
       });
   }
+
+  registerRpc(server, getStore, connect);
 
   const stopHooks = [
     server.before("agent.session_open", ({ request }, { paseo }) => {
