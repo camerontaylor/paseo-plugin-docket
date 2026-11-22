@@ -770,6 +770,8 @@ function valueLabels(q: ChoiceQuestion, d: DraftContent): string[] {
 
 export interface Close {
   kind: "close";
+  /** The actor for agent tool calls. Checked under the surface lock. */
+  agentId?: string;
   /** The questions to close; every open one when absent. */
   questions?: string[];
   reason?: string;
@@ -777,6 +779,9 @@ export interface Close {
 }
 
 function closeRecord(record: SurfaceRecord, cmd: Close): Result {
+  if (cmd.agentId !== undefined && cmd.agentId !== record.agentId) {
+    return refuse("unknown-target", "No such surface for this agent.");
+  }
   if (!hasOpenQuestion(record)) return closedRefusal(record);
   const ids = cmd.questions ?? Object.keys(record.questions).filter((id) => record.questions[id].state === "open");
   const problems: TargetProblem[] = [];
@@ -789,7 +794,10 @@ function closeRecord(record: SurfaceRecord, cmd: Close): Result {
     return refuse("unknown-target", `nothing was closed: ${problems.map((p) => `${p.target} ${p.message}`).join("; ")}`, { problems });
   }
   const questions = { ...record.questions };
-  for (const id of ids) questions[id] = closeQuestion(questions[id]);
+  for (const id of ids) {
+    questions[id] = closeQuestion(questions[id]);
+    if (cmd.reason) questions[id].closeReason = cmd.reason;
+  }
   const next = bump(record, { questions });
   if (!hasOpenQuestion(next)) {
     next.resolvedAt = cmd.now;

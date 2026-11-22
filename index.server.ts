@@ -7,7 +7,7 @@ import { z } from "zod";
 import { startDelivery } from "./server/delivery";
 import type { PaseoApi } from "./server/delivery-host";
 import { openStore } from "./server/store";
-import { noopTool } from "./server/noop-tool";
+import { attachDocketTools, isDocketPermission, registerToolSettings } from "./server/tools";
 
 export default function contribute(server: PluginServerContext) {
   // S0 finding aid: record what the plugin process is given for PASEO_HOME (plan D8).
@@ -27,12 +27,22 @@ export default function contribute(server: PluginServerContext) {
     version: 1,
     schema: z.object({ transport: z.enum(["auto", "direct"]).default("auto") }),
   }));
+  const readToolSettings = registerToolSettings(server);
+  let storePromise: ReturnType<typeof openStore> | undefined;
+  function getStore() {
+    return storePromise ??= readToolSettings()
+      .then(({ retentionDays, recordEvents }) => openStore({ retentionDays, recordEvents }))
+      .catch((error: unknown) => {
+        storePromise = undefined;
+        throw error;
+      });
+  }
   let delivery: Promise<ReturnType<typeof startDelivery>> | undefined;
 
   // The SDK supplies the host API in handler contexts. Start recovery as soon
   // as one is available, without blocking the session-open hook on host RPCs.
   function connect(paseo: PaseoApi) {
-    return delivery ??= Promise.all([openStore(), settings.read()])
+    return delivery ??= Promise.all([getStore(), settings.read()])
       .then(([store, config]) => startDelivery(store, paseo, {
         forceDirect: config.status === "ready" && config.values.transport === "direct",
       }))
@@ -45,7 +55,11 @@ export default function contribute(server: PluginServerContext) {
   const stopHooks = [
     server.before("agent.session_open", ({ request }, { paseo }) => {
       void connect(paseo).catch(() => console.warn("[docket] delivery startup failed"));
-      return { ...request, tools: [...request.tools, noopTool] };
+      return attachDocketTools(request, readToolSettings, getStore);
+    }),
+    server.addHook("agent.permission.before", async ({ agent, request }, { paseo }) => {
+      if (request.kind !== "tool" || !isDocketPermission(request.name) || !(await readToolSettings()).allowToolPermissions) return;
+      await paseo.agents.ref(agent.id).respondToPermission({ requestId: request.id, response: { behavior: "allow" } });
     }),
     server.addHook("agent.turn.before", async ({ agent }, { paseo }) => (await connect(paseo)).check(agent.id)),
     server.addHook("agent.turn.after", async ({ agent }, { paseo }) => (await connect(paseo)).check(agent.id)),
