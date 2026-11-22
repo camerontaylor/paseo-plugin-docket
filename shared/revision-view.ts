@@ -149,19 +149,59 @@ export function revisionView(record: SurfaceRecord, earlier: SurfaceRecord, curr
     (next.changeBlocks.has(block) && !next.loadedBlocks.has(block))));
   // Snapshot addresses are local to a surface. Use paths to find the old address.
   const oldAddresses = new Map<string, string>();
-  const newPaths = new Set<string>();
   const renameClaims = new Map<string, number>();
+  const fileMatches = new Map<string, string>();
+  const claimed = new Set<string>();
+  const uncertainCurrent = new Set<string>();
+  const uncertainEarlier = new Set<string>();
   for (const [key, { change }] of before) {
     if (change) oldAddresses.set(changeKey(owner(key), change.path, change.hunk), key);
   }
-  for (const [key, { change }] of next.items) {
-    if (!change || change.hunk) continue;
-    const block = owner(key);
-    newPaths.add(changeKey(block, change.path));
-    if (change.oldPath) {
-      const old = changeKey(block, change.oldPath);
-      renameClaims.set(old, (renameClaims.get(old) ?? 0) + 1);
+  const nextFiles = [...next.items].flatMap(([key, { change }]) =>
+    change && change.hunk === undefined && !missing.has(owner(key)) ? [{ block: owner(key), ...change }] : []);
+  function match(block: string, path: string, previousPath: string) {
+    fileMatches.set(changeKey(block, path), previousPath);
+    claimed.add(changeKey(block, previousPath));
+  }
+
+  // Reserve corroborated rename destinations before matching new rename origins.
+  for (const { block, path, oldPath } of nextFiles) {
+    const destination = changeKey(block, path);
+    const atDestination = oldAddresses.get(destination);
+    if (oldPath && atDestination && before.get(atDestination)?.change?.oldPath === oldPath) {
+      match(block, path, path);
+    } else if (oldPath) {
+      const origin = changeKey(block, oldPath);
+      renameClaims.set(origin, (renameClaims.get(origin) ?? 0) + 1);
     }
+  }
+  for (const { block, path, oldPath } of nextFiles) {
+    if (!oldPath) continue;
+    const destination = changeKey(block, path);
+    const origin = changeKey(block, oldPath);
+    if (!fileMatches.has(destination) && oldAddresses.has(origin) && !claimed.has(origin) && renameClaims.get(origin) === 1) {
+      match(block, path, oldPath);
+    }
+  }
+  for (const { block, path, oldPath } of nextFiles) {
+    const destination = changeKey(block, path);
+    if (fileMatches.has(destination)) continue;
+    const atDestination = oldAddresses.get(destination);
+    const priorFile = atDestination && before.get(atDestination)?.change;
+    if (!oldPath && priorFile && !priorFile.oldPath && !claimed.has(destination)) {
+      match(block, path, path);
+      continue;
+    }
+    for (const [key, { change }] of before) {
+      if (!change || change.hunk !== undefined || owner(key) !== block) continue;
+      const priorPath = changeKey(block, change.path);
+      if (claimed.has(priorPath)) continue;
+      if (change.path === path || change.oldPath === path || (oldPath && [change.path, change.oldPath].includes(oldPath))) {
+        uncertainCurrent.add(destination);
+        uncertainEarlier.add(priorPath);
+      }
+    }
+    if (oldPath) uncertainCurrent.add(destination);
   }
 
   const current = new Map<string, RevisionItem>();
@@ -172,26 +212,24 @@ export function revisionView(record: SurfaceRecord, earlier: SurfaceRecord, curr
       priorKey = undefined;
       const change = item.change;
       if (change && !missing.has(block)) {
-        const path = oldAddresses.has(changeKey(block, change.path)) ? change.path : undefined;
-        const old = change.oldPath && changeKey(block, change.oldPath);
-        const renamed = old && oldAddresses.has(old) && !newPaths.has(old) && renameClaims.get(old) === 1
-          ? change.oldPath : undefined;
-        const matched = renamed ?? path;
+        const matched = fileMatches.get(changeKey(block, change.path));
         if (matched) priorKey = oldAddresses.get(changeKey(block, matched, change.hunk));
       }
     }
+    const uncertain = item.change && uncertainCurrent.has(changeKey(block, item.change.path));
     const previous = priorKey === undefined ? undefined : before.get(priorKey);
     const mark = previous
       ? previous.signature !== undefined && item.signature !== undefined
         ? previous.signature === item.signature ? "Unchanged" : "Changed"
         : undefined
-      : earlier.document && !missing.has(block) ? "New" : undefined;
+      : earlier.document && !missing.has(block) && !uncertain ? "New" : undefined;
     current.set(key, { title: item.title, mark, earlier: previous });
     if (priorKey !== undefined) before.delete(priorKey);
   }
   const removed = [...before].map(([key, item]) => ({
     key, title: item.title,
-    mark: record.document && earlier.document && !missing.has(owner(key)) && !key.startsWith("retained:")
+    mark: record.document && earlier.document && !missing.has(owner(key)) && !key.startsWith("retained:") &&
+      !(item.change && uncertainEarlier.has(changeKey(owner(key), item.change.path)))
       ? "Removed" as const : undefined,
     earlier: item,
   }));

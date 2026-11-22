@@ -188,7 +188,7 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
   hostId: string; theme: PluginHostProps["theme"]; record: SurfaceRecord;
   refresh: () => Promise<SurfaceRecord | null | undefined>;
 }) {
-  const { earlier, comparison, loading } = useRevisionView(hostId, record);
+  const { earlier, comparison, loading, evidencePending } = useRevisionView(hostId, record);
   const actions = useQuestionActions(hostId, record, refresh);
   const [ref] = useAgents({ hosts: [hostId], where: (agent) => agent.id === record.agentId });
   const wait = useAgent(ref ?? record.agentId, (agent): AgentWait => {
@@ -255,7 +255,8 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
     {record.revises && <View style={styles.stack}>
       <Copy muted>{earlier ? `Replaces · ${earlier.summary}`
         : loading ? "Loading earlier surface…" : "Earlier surface unavailable"}</Copy>
-      {comparison?.incomplete && <Copy muted>Some item evidence is unavailable for comparison.</Copy>}
+      {evidencePending ? <Copy muted>Comparing saved snapshots…</Copy>
+        : comparison?.incomplete && <Copy muted>Some item evidence is unavailable for comparison.</Copy>}
     </View>}
     <SurfaceBlocks record={record} hostId={hostId} theme={theme} feedback={feedback} reviewPrompt={reviewPrompt}>
     <View style={styles.stack}>

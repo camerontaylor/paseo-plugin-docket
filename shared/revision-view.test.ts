@@ -151,3 +151,61 @@ it("keeps comparison incomplete when either referenced excerpt lacks a hash", ()
     expect(revisionView(current, { ...earlier, snapshots }, empty, empty)?.current.get(address)?.mark).toBe("Unchanged");
   }
 });
+
+it("withholds feedback when both snapshots load but only one corroborates the destination", () => {
+  const document: SurfaceDocument = { v: 1, summary: "Diff", view: { t: "changes", id: "diff" } };
+  const earlier = make(document);
+  earlier.comments["diff.f1"] = { version: 1, text: "Earlier destination feedback", delivery: null };
+  const current = make({ ...document, revises: earlier.id }, earlier);
+  const evidence = (oldPath?: string) => new Map([["diff", JSON.stringify({
+    files: [
+      { id: "f1", path: "new.ts", oldPath, status: oldPath ? "renamed" : "changed", added: 0, removed: 0, patch: "metadata" },
+      { id: "f2", path: "sibling.ts", status: "changed", added: 1, removed: 0, patch: "sibling patch" },
+    ], notes: [],
+  })]]);
+  for (const [next, prior] of [[evidence("old.ts"), evidence()], [evidence(), evidence("old.ts")]]) {
+    const view = revisionView(current, earlier, next, prior)!;
+    expect(view.incomplete).toBe(true);
+    expect(view.current.get("diff.f1")?.mark).toBeUndefined();
+    expect(view.current.get("diff.f1")?.earlier).toBeUndefined();
+    expect(view.current.get("diff.f2")?.mark).toBe("Unchanged");
+    expect(view.removed[0].mark).toBeUndefined();
+    expect(view.removed[0].earlier?.draftComment).toBe("Earlier destination feedback");
+  }
+});
+
+it("claims each corroborated rename even when a sibling reuses an old path", () => {
+  const document: SurfaceDocument = { v: 1, summary: "Diff", view: { t: "changes", id: "diff" } };
+  const earlier = make(document);
+  earlier.comments["diff.f1"] = { version: 1, text: "Earlier a", delivery: null };
+  earlier.comments["diff.f2"] = { version: 1, text: "Earlier b", delivery: null };
+  const current = make({ ...document, revises: earlier.id }, earlier);
+  const evidence = (rows: [string, string?][]) => new Map([["diff", JSON.stringify({
+    files: rows.map(([path, oldPath], index) => ({
+      id: `f${index + 1}`, path, oldPath, status: oldPath ? "renamed" : "changed", added: 0, removed: 0, patch: "metadata",
+    })), notes: [],
+  })]]);
+  const view = revisionView(current, earlier, evidence([["a.ts", "b.ts"], ["c.ts", "a.ts"]]), evidence([["a.ts"], ["b.ts"]]))!;
+  expect(view.current.get("diff.f1")?.earlier?.draftComment).toBe("Earlier b");
+  expect(view.current.get("diff.f2")?.earlier?.draftComment).toBe("Earlier a");
+  expect([...view.current.values()].map(({ mark }) => mark)).toEqual(["Changed", "Changed"]);
+  expect(view.removed).toEqual([]);
+  expect(view.incomplete).toBe(false);
+});
+
+it("preserves shifted hunk feedback separately when the header no longer identifies it", () => {
+  const document: SurfaceDocument = { v: 1, summary: "Diff", view: { t: "changes", id: "diff" } };
+  const earlier = make(document);
+  earlier.comments["diff.f1h1"] = { version: 1, text: "Earlier hunk feedback", delivery: null };
+  const current = make({ ...document, revises: earlier.id }, earlier);
+  const evidence = (line: number) => {
+    const header = `@@ -${line},1 +${line},1 @@`;
+    return new Map([["diff", JSON.stringify({
+      files: [{ id: "f1", path: "a.ts", status: "changed", added: 1, removed: 1,
+        patch: `${header}\n-old\n+new`, hunks: [{ id: "f1h1", header }] }], notes: [],
+    })]]);
+  };
+  const view = revisionView(current, earlier, evidence(11), evidence(10))!;
+  expect(view.current.get("diff.f1h1")?.earlier).toBeUndefined();
+  expect(view.removed).toMatchObject([{ mark: "Removed", earlier: { draftComment: "Earlier hunk feedback" } }]);
+});

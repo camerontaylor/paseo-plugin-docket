@@ -6,16 +6,17 @@ import { callHost, getHub } from "./hub";
 import { useSurface } from "./use-surface";
 
 const empty: ChangesText = new Map();
-const attemptTimeoutMs = 4_000;
+const attemptTimeoutsMs = [4_000, 4_000, 8_000];
 const retryDelaysMs = [250, 1_000];
 
 function useFrozenChanges(hostId: string, record?: SurfaceRecord) {
   const surfaceId = record?.id;
-  const key = JSON.stringify([hostId, surfaceId, Object.entries(record?.snapshots ?? {})
-    .flatMap(([id, snapshot]) => snapshot.kind === "changes" && typeof snapshot.block === "string" ? [[id, snapshot.block, snapshot.hash]] : [])]);
+  const snapshots = Object.entries(record?.snapshots ?? {})
+    .flatMap(([id, snapshot]) => snapshot.kind === "changes" && typeof snapshot.block === "string" ? [[id, snapshot.block, snapshot.hash]] : []);
+  const key = JSON.stringify([hostId, surfaceId, snapshots]);
   const hub = getHub();
   const source = useSyncExternalStore(hub.subscribe, () => hub.sourceFor(hostId));
-  const [loaded, setLoaded] = useState<{ key: string; source: typeof source; changes: ChangesText }>();
+  const [loaded, setLoaded] = useState<{ key: string; source: typeof source; changes: ChangesText; completed: number }>();
   useEffect(() => {
     if (!surfaceId || !source) return;
     const id = surfaceId;
@@ -40,20 +41,23 @@ function useFrozenChanges(hostId: string, record?: SurfaceRecord) {
     function read(snapshotId: string, block: string, attempt: number) {
       if (!isCurrent()) return;
       let settled = false;
-      const deadline = schedule(() => finish(null), attemptTimeoutMs);
+      const deadline = schedule(() => finish(null), attemptTimeoutsMs[attempt]);
       function finish(text: string | null) {
         if (settled || !isCurrent()) return;
         settled = true;
         cancel(deadline);
         if (text === null) {
           const delay = retryDelaysMs[attempt];
-          if (delay !== undefined) schedule(() => read(snapshotId, block, attempt + 1), delay);
-          return;
+          if (delay !== undefined) {
+            schedule(() => read(snapshotId, block, attempt + 1), delay);
+            return;
+          }
         }
-        setLoaded((prior) => ({
-          key, source,
-          changes: new Map(prior?.key === key && prior.source === source ? prior.changes : []).set(block, text),
-        }));
+        setLoaded((prior) => {
+          const previous = prior?.key === key && prior.source === source ? prior : undefined;
+          const changes = text === null ? previous?.changes ?? empty : new Map(previous?.changes).set(block, text);
+          return { key, source, changes, completed: (previous?.completed ?? 0) + 1 };
+        });
       }
       void callHost(hub, hostId, evidenceGet, { surfaceId: id, snapshotId })
         .then(finish, () => finish(null));
@@ -65,19 +69,20 @@ function useFrozenChanges(hostId: string, record?: SurfaceRecord) {
       for (const timer of timers) clearTimeout(timer);
     };
   }, [hostId, surfaceId, key, hub, source]);
-  return loaded?.key === key && loaded.source === source ? loaded.changes : empty;
+  const current = loaded?.key === key && loaded.source === source ? loaded : undefined;
+  return { changes: current?.changes ?? empty, pending: !!source && (current?.completed ?? 0) < snapshots.length };
 }
 
 export function useRevisionView(hostId: string, record: SurfaceRecord) {
   const history = useSurface(hostId, record.revises ?? undefined);
   const candidate = history.record;
   const earlier = candidate && candidate.id === record.revises && candidate.agentId === record.agentId ? candidate : undefined;
-  const currentChanges = useFrozenChanges(hostId, earlier && record);
-  const earlierChanges = useFrozenChanges(hostId, earlier);
+  const { changes: currentChanges, pending: currentPending } = useFrozenChanges(hostId, earlier && record);
+  const { changes: earlierChanges, pending: earlierPending } = useFrozenChanges(hostId, earlier);
   const comparison = useMemo(
     () => earlier && revisionView(record, earlier, currentChanges, earlierChanges),
     [record, earlier, currentChanges, earlierChanges],
   );
   const loading = !history.unavailable && history.record === undefined;
-  return { earlier, comparison, loading };
+  return { earlier, comparison, loading, evidencePending: currentPending || earlierPending };
 }

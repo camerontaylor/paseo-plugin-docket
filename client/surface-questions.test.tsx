@@ -22,19 +22,20 @@ vi.mock("./surface-blocks", () => ({
 vi.mock("./use-revision-view", () => ({ useRevisionView: () => ({}) }));
 vi.mock("./hub", () => ({ callHost, getHub: () => null }));
 
-it("lets a user copy or discard a refused compacted edit while showing the retained draft", async () => {
+it.each([true, false])("lets a user copy or discard a closed edit (refreshed record compacted: %s)", async (isCompacted) => {
   const result = createRecord({
     id: "s_aaaaaa", agentId: "agent", now: "2026-11-21T10:00:00Z", document: { v: 1, summary: "Review" },
   });
   if (!result.ok) throw new Error(result.refusal.message);
+  callHost.mockClear();
   callHost.mockResolvedValue({ refusal: { code: "closed", message: "Surface compacted" } });
-  const compacted = { ...result.record, document: null, comments: {
+  const refreshed = { ...result.record, document: isCompacted ? null : result.record.document, comments: {
     "plan.step": { version: 2, text: "Retained text", title: "Plan step", delivery: null },
   } };
   function Harness() {
     const [record, setRecord] = useState(result.record);
     return <SurfaceQuestions hostId="host" theme={{ colors: {} } as Parameters<typeof SurfaceQuestions>[0]["theme"]}
-      record={record} refresh={async () => { setRecord(compacted); return compacted; }} />;
+      record={record} refresh={async () => { setRecord(refreshed); return refreshed; }} />;
   }
   let tree!: ReturnType<typeof create>;
   await act(() => { tree = create(createElement(Harness)); });
@@ -61,7 +62,11 @@ it("lets a user copy or discard a refused compacted edit while showing the retai
   expect(discard).toBeDefined();
   await act(() => discard!.props.onPress());
   expect(callHost).toHaveBeenCalledTimes(1);
-  expect(tree.root.findAllByType("Text" as never).some((node) => node.children.join("") === "Retained text")).toBe(true);
+  if (isCompacted) {
+    expect(tree.root.findAllByType("Text" as never).some((node) => node.children.join("") === "Retained text")).toBe(true);
+  } else {
+    expect(tree.root.findByType("TextInput" as never).props.value).toBe("Retained text");
+  }
   expect(tree.root.findAllByType("Text" as never).some((node) => node.children.join("") === "Comment: Unsaved text")).toBe(false);
   await act(() => tree.unmount());
 });
