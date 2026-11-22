@@ -65,30 +65,35 @@ function WorkspaceFilter({ id, workspaceRef, active, choose, theme }: {
   return <InboxButton label={workspaceName(workspace, id)} selected={active} theme={theme} onPress={choose} />;
 }
 
-function ExpandedCard({ hostId, surfaceId, theme, controls, fromHistory = false }: {
+function ExpandedCard({ hostId, surfaceId, theme, controls, ready, fromHistory = false }: {
   hostId: string;
   surfaceId: string;
   theme: Theme;
   controls: AnswerControls;
+  ready: boolean;
   fromHistory?: boolean;
 }) {
   const { record, unavailable, refresh } = controls.useSurface(hostId, surfaceId);
-  if (unavailable) return <View style={{ gap: 8 }}>
-    <Text accessibilityRole="alert" style={{ color: theme.colors.statusWarning }}>The owning Docket host is unavailable.</Text>
-    <InboxButton theme={theme} label="Reload surface" onPress={() => void refresh()} />
-  </View>;
-  if (!record) return <Text style={{ color: theme.colors.foregroundMuted }}>
-    {record === null ? "This surface is no longer available." : "Loading questions…"}
-  </Text>;
+  const blocked = !ready || unavailable;
   return <View style={{ gap: 8 }}>
-    {fromHistory && <>
-      <Text accessibilityRole="header" style={{ color: theme.colors.foreground, fontWeight: "600" }}>{record.summary}</Text>
-      {record.context && <Text style={{ color: theme.colors.foreground }}>{record.context}</Text>}
-      {record.compactedAt !== null && <Text style={{ color: theme.colors.foregroundMuted }}>
-        The original view was compacted. Saved answers are shown below.
-      </Text>}
-    </>}
-    <controls.SurfaceQuestions hostId={hostId} theme={theme} record={record} refresh={refresh} />
+    {blocked && <View style={{ gap: 8 }}>
+      <Text accessibilityRole="alert" style={{ color: theme.colors.statusWarning }}>The owning Docket host is unavailable.</Text>
+      {ready && <InboxButton theme={theme} label="Reload surface" onPress={() => void refresh()} />}
+    </View>}
+    {!blocked && !record && <Text style={{ color: theme.colors.foregroundMuted }}>
+      {record === null ? "This surface is no longer available." : "Loading questions…"}
+    </Text>}
+    {record && <View style={blocked ? { display: "none" } : { gap: 8 }}>
+      {fromHistory && <>
+        <Text accessibilityRole="header" style={{ color: theme.colors.foreground, fontWeight: "600" }}>{record.summary}</Text>
+        {record.context && <Text style={{ color: theme.colors.foreground }}>{record.context}</Text>}
+        {record.compactedAt !== null && <Text style={{ color: theme.colors.foregroundMuted }}>
+          The original view was compacted. Saved answers are shown below.
+        </Text>}
+      </>}
+      <controls.SurfaceQuestions key={entityKey(hostId, surfaceId)}
+        hostId={hostId} theme={theme} record={record} refresh={refresh} />
+    </View>}
   </View>;
 }
 
@@ -128,20 +133,20 @@ function Card({ card, source, openChat, agentRef, workspaceRef, theme, now, cont
       {summary.pendingDeliveries} awaiting delivery
     </Text>}
     <View style={buttonRow}>
-      {ready && actionable && <InboxButton theme={theme}
+      {(expanded || (ready && actionable)) && <InboxButton theme={theme}
         label={expanded ? "Hide details" : summary.status === "open" ? "Answer in place" : "Delivery details"}
         onPress={() => setExpanded(!expanded)} />}
       {openChat && <InboxButton theme={theme} label="Open chat" onPress={openChat}
         disabled={source?.docketStatus === "disconnected"} />}
     </View>
-    {ready && expanded && <ExpandedCard hostId={card.hostId} surfaceId={summary.id} theme={theme} controls={controls} />}
+    {expanded && <ExpandedCard key={entityKey(card.hostId, summary.id)}
+      hostId={card.hostId} surfaceId={summary.id} theme={theme} controls={controls} ready={ready} />}
   </View>;
 }
 
-function InboxQueue({ theme, navigation, controls }: PluginScreenProps & { controls: AnswerControls }) {
-  const inbox = useDocketInbox();
-  const [hostFilter, setHostFilter] = useState<string>();
-  const [workspaceFilter, setWorkspaceFilter] = useState<string>();
+function InboxQueue({ theme, navigation, controls, inbox }: PluginScreenProps & { controls: AnswerControls; inbox: Inbox }) {
+  const [selectedHost, setHostFilter] = useState<string>();
+  const [selectedWorkspace, setWorkspaceFilter] = useState<string>();
   const [label, setLabel] = useState("");
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
@@ -156,13 +161,21 @@ function InboxQueue({ theme, navigation, controls }: PluginScreenProps & { contr
       `${key} ${value}`.toLowerCase().includes(needle)),
   }).map((ref) => entityKey(ref.hostId, ref.id)));
   const sources = new Map(inbox.sources.map((host) => [host.serverId, host]));
+  const removedHost = selectedHost !== undefined && !sources.has(selectedHost);
+  const hostFilter = removedHost ? undefined : selectedHost;
+  const workspaceFilter = removedHost ? undefined : selectedWorkspace;
+  useEffect(() => {
+    if (!removedHost) return;
+    setHostFilter(undefined);
+    setWorkspaceFilter(undefined);
+  }, [removedHost]);
   const availableGroups = groupInbox(inbox.cards.filter((card) => !hostFilter || card.hostId === hostFilter));
   const workspaces = new Map([...availableGroups.values()].flat().flatMap(({ hostId, summary }) =>
     summary.workspaceId ? [[entityKey(hostId, summary.workspaceId), summary.workspaceId] as const] : []));
   const groups = groupInbox([...availableGroups.values()].flat().filter(({ hostId, summary }) =>
     (!workspaceFilter || (summary.workspaceId && entityKey(hostId, summary.workspaceId) === workspaceFilter))
     && (!needle || matchingAgents.has(entityKey(hostId, summary.agentId)))));
-  return <ScrollView style={{ backgroundColor: theme.colors.surface0 }} contentContainerStyle={{ padding: 16, gap: 14 }}>
+  return <ScrollView style={{ flex: 1, backgroundColor: theme.colors.surface0 }} contentContainerStyle={{ padding: 16, gap: 14 }}>
     <Text style={{ color: theme.colors.foreground, fontSize: 18, fontWeight: "600" }}>Open · {countLabel(inbox.count)}</Text>
     {inbox.sources.filter((source) => source.docketStatus !== "ready").map((source) =>
       <Text key={source.serverId} style={{ color: theme.colors.statusWarning }}>
@@ -203,14 +216,15 @@ function InboxQueue({ theme, navigation, controls }: PluginScreenProps & { contr
 
 function DocketInbox({ controls, ...props }: PluginScreenProps & { controls: InboxDependencies }) {
   const { theme } = props;
+  const inbox = useDocketInbox();
   const [tab, setTab] = useState<"inbox" | "decisions">("inbox");
   const [target, setTarget] = useState<SurfaceTarget>();
   return <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
-    <View style={[buttonRow, { padding: 12 }]}>
-      <InboxButton theme={theme} label="Inbox" selected={tab === "inbox"} onPress={() => setTab("inbox")} />
-      <InboxButton theme={theme} label="Decisions" selected={tab === "decisions"} onPress={() => setTab("decisions")} />
+    <View accessibilityRole="tablist" style={[buttonRow, { padding: 12 }]}>
+      <InboxButton theme={theme} label="Inbox" role="tab" selected={tab === "inbox"} onPress={() => setTab("inbox")} />
+      <InboxButton theme={theme} label="Decisions" role="tab" selected={tab === "decisions"} onPress={() => setTab("decisions")} />
     </View>
-    {tab === "inbox" ? <InboxQueue {...props} controls={controls} /> : <>
+    {tab === "inbox" ? <InboxQueue {...props} controls={controls} inbox={inbox} /> : <>
       <View style={{ flex: 1, display: target ? "none" : "flex" }}>
         <controls.Decisions theme={theme} openSurface={setTarget} />
       </View>
@@ -219,7 +233,8 @@ function DocketInbox({ controls, ...props }: PluginScreenProps & { controls: Inb
           <InboxButton theme={theme} label="Back to Decisions" onPress={() => setTarget(undefined)} />
         </View>
         <ExpandedCard key={entityKey(target.hostId, target.surfaceId)}
-          {...target} theme={theme} controls={controls} fromHistory />
+          {...target} theme={theme} controls={controls} fromHistory
+          ready={inbox.sources.some((source) => source.serverId === target.hostId && source.docketStatus === "ready")} />
       </ScrollView>}
     </>}
   </View>;

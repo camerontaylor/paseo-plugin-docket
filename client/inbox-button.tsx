@@ -3,14 +3,15 @@ import type { PluginHostProps } from "@getpaseo/plugin/client";
 
 type Theme = PluginHostProps["theme"];
 
-export function InboxButton({ label, onPress, disabled, selected, theme }: {
+export function InboxButton({ label, onPress, disabled, selected, theme, role = "button" }: {
   label: string;
   onPress(): void;
   disabled?: boolean;
   selected?: boolean;
+  role?: "button" | "tab";
   theme: Theme;
 }) {
-  return <Pressable accessibilityRole="button" accessibilityState={{ disabled, selected }}
+  return <Pressable accessibilityRole={role} accessibilityState={{ disabled, selected }}
     disabled={disabled} onPress={onPress}
     style={{ padding: 8, borderRadius: 5, backgroundColor: selected ? theme.colors.accent : theme.colors.surface2,
       opacity: disabled ? 0.55 : 1 }}>
