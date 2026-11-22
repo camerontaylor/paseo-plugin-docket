@@ -99,13 +99,13 @@ it("keeps expanded controls at the same keyed position across stale and reconnec
   const refresh = vi.fn();
   const list = queue({ sources: [ready], cards: [card], count: { kind: "exact", value: 1 } });
   vi.mocked(useState).mockReturnValueOnce([undefined, vi.fn()]).mockReturnValueOnce([undefined, vi.fn()])
-    .mockReturnValueOnce(["", vi.fn()]).mockReturnValueOnce([0, vi.fn()]);
+    .mockReturnValueOnce(["", vi.fn()]).mockReturnValueOnce([0, vi.fn()]).mockReturnValueOnce([new Set(), vi.fn()]);
   const row = find(render(list), (element) => element.props.card === card)!;
 
   function expandedFor(status: "ready" | "stale", unavailable = false, hostId = "a") {
     vi.mocked(useState).mockReturnValueOnce([true, vi.fn()]);
     vi.mocked(useSurface).mockReturnValue({ record, unavailable, refresh });
-    const expanded = find(render({ ...row, props: { ...row.props, card: { ...card, hostId }, source: host(hostId, status) } }),
+    const expanded = find(render({ ...row, props: { ...row.props, opened: true, card: { ...card, hostId }, source: host(hostId, status) } }),
       (element) => element.props.surfaceId === summary.id)!;
     const wrapper = find(render(expanded), (element) => {
       const child = element.props.children as Element | undefined;
@@ -132,7 +132,7 @@ it("restores remaining cards when the selected host and its workspace disappear"
   const setWorkspace = vi.fn();
   const list = queue({ sources: [host("b")], cards: [card], count: { kind: "exact", value: 1 } });
   vi.mocked(useState).mockReturnValueOnce(["a", setHost]).mockReturnValueOnce(['["a","workspace"]', setWorkspace])
-    .mockReturnValueOnce(["", vi.fn()]).mockReturnValueOnce([0, vi.fn()]);
+    .mockReturnValueOnce(["", vi.fn()]).mockReturnValueOnce([0, vi.fn()]).mockReturnValueOnce([new Set(), vi.fn()]);
   vi.mocked(useEffect).mockClear();
   const tree = render(list);
   expect(find(tree, (element) => element.props.card === card)).toBeDefined();

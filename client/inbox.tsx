@@ -6,7 +6,7 @@ import * as ui from "@getpaseo/plugin/client/ui";
 import type { PluginWorkspaceSnapshot } from "@getpaseo/plugin";
 import type { SurfaceRecord } from "../shared/record";
 import { InboxButton, buttonRow } from "./inbox-button";
-import { countLabel, entityKey, groupInbox } from "./inbox-query";
+import { countLabel, entityKey, groupInbox, inboxSection } from "./inbox-query";
 import { useDocketInbox } from "./use-docket";
 
 const screenId = "inbox";
@@ -75,6 +75,7 @@ function ExpandedCard({ hostId, surfaceId, theme, controls, ready, fromHistory =
 }) {
   const { record, unavailable, refresh } = controls.useSurface(hostId, surfaceId);
   const blocked = !ready || unavailable;
+  const { display, ...visibility } = paneVisibility(!blocked);
   return <View style={{ gap: 8 }}>
     {blocked && <View style={{ gap: 8 }}>
       <Text accessibilityRole="alert" style={{ color: theme.colors.statusWarning }}>The owning Docket host is unavailable.</Text>
@@ -83,7 +84,7 @@ function ExpandedCard({ hostId, surfaceId, theme, controls, ready, fromHistory =
     {!blocked && !record && <Text style={{ color: theme.colors.foregroundMuted }}>
       {record === null ? "This surface is no longer available." : "Loading questions…"}
     </Text>}
-    {record && <View style={blocked ? { display: "none" } : { gap: 8 }}>
+    {record && <View {...visibility} style={blocked ? { display } : { gap: 8 }}>
       {fromHistory && <>
         <Text accessibilityRole="header" style={{ color: theme.colors.foreground, fontWeight: "600" }}>{record.summary}</Text>
         {record.context && <Text style={{ color: theme.colors.foreground }}>{record.context}</Text>}
@@ -97,8 +98,20 @@ function ExpandedCard({ hostId, surfaceId, theme, controls, ready, fromHistory =
   </View>;
 }
 
-function Card({ card, source, openChat, agentRef, workspaceRef, theme, now, controls }: {
+function paneVisibility(visible: boolean) {
+  return {
+    display: visible ? "flex" as const : "none" as const,
+    accessibilityElementsHidden: !visible,
+    importantForAccessibility: visible ? "auto" as const : "no-hide-descendants" as const,
+    pointerEvents: visible ? "auto" as const : "none" as const,
+  };
+}
+
+function Card({ card, source, openChat, agentRef, workspaceRef, theme, now, controls, visible, opened, retain }: {
   card: Inbox["cards"][number];
+  visible: boolean;
+  opened: boolean;
+  retain(): void;
   source: Inbox["sources"][number] | undefined;
   openChat?(): void;
   agentRef?: AgentRef;
@@ -113,7 +126,9 @@ function Card({ card, source, openChat, agentRef, workspaceRef, theme, now, cont
   const [expanded, setExpanded] = useState(false);
   const ready = source?.docketStatus === "ready";
   const actionable = summary.status === "open" || summary.pendingDeliveries > 0;
-  return <View style={{ padding: 12, gap: 8, borderColor: theme.colors.border, borderWidth: 1,
+  const { display, ...visibility } = paneVisibility(visible);
+  const { display: detailsDisplay, ...detailsVisibility } = paneVisibility(expanded);
+  return <View {...visibility} style={{ display, padding: 12, gap: 8, borderColor: theme.colors.border, borderWidth: 1,
     borderRadius: 8, backgroundColor: theme.colors.surface1 }}>
     <Text style={{ color: theme.colors.foreground, fontSize: 16, fontWeight: "600" }}>{summary.summary}</Text>
     <Text style={{ color: theme.colors.foregroundMuted }}>
@@ -135,12 +150,18 @@ function Card({ card, source, openChat, agentRef, workspaceRef, theme, now, cont
     <View style={buttonRow}>
       {(expanded || (ready && actionable)) && <InboxButton theme={theme}
         label={expanded ? "Hide details" : summary.status === "open" ? "Answer in place" : "Delivery details"}
-        onPress={() => setExpanded(!expanded)} />}
+        onPress={() => {
+          if (expanded) Keyboard.dismiss();
+          else retain();
+          setExpanded(!expanded);
+        }} />}
       {openChat && <InboxButton theme={theme} label="Open chat" onPress={openChat}
         disabled={source?.docketStatus === "disconnected"} />}
     </View>
-    {expanded && <ExpandedCard key={entityKey(card.hostId, summary.id)}
-      hostId={card.hostId} surfaceId={summary.id} theme={theme} controls={controls} ready={ready} />}
+    {opened && <View {...detailsVisibility} style={{ display: detailsDisplay }}>
+      <ExpandedCard key={entityKey(card.hostId, summary.id)}
+        hostId={card.hostId} surfaceId={summary.id} theme={theme} controls={controls} ready={ready} />
+    </View>}
   </View>;
 }
 
@@ -149,6 +170,17 @@ function InboxQueue({ theme, navigation, controls, inbox }: PluginScreenProps & 
   const [selectedWorkspace, setWorkspaceFilter] = useState<string>();
   const [label, setLabel] = useState("");
   const [now, setNow] = useState(Date.now);
+  const [opened, setOpened] = useState(() => new Set<string>());
+  const eligible = inbox.cards.filter(({ summary }) => inboxSection(summary) !== undefined);
+  useEffect(() => {
+    const eligibleKeys = new Set(inbox.cards.flatMap(({ hostId, summary }) =>
+      inboxSection(summary) ? [entityKey(hostId, summary.id)] : []));
+    setOpened((prior) => {
+      const remaining = [...prior].filter((key) => eligibleKeys.has(key));
+      return remaining.length === prior.size ? prior : new Set(remaining);
+    });
+  }, [inbox.cards]);
+
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60_000);
     return () => clearInterval(timer);
@@ -175,6 +207,26 @@ function InboxQueue({ theme, navigation, controls, inbox }: PluginScreenProps & 
   const groups = groupInbox([...availableGroups.values()].flat().filter(({ hostId, summary }) =>
     (!workspaceFilter || (summary.workspaceId && entityKey(hostId, summary.workspaceId) === workspaceFilter))
     && (!needle || matchingAgents.has(entityKey(hostId, summary.agentId)))));
+  const visibleKeys = new Set([...groups.values()].flat().map(({ hostId, summary }) => entityKey(hostId, summary.id)));
+  function renderCard(card: Inbox["cards"][number], visible: boolean) {
+    const { hostId, summary } = card;
+    const key = entityKey(hostId, summary.id);
+    return <Card key={key} card={card} source={sources.get(hostId)} now={now}
+      visible={visible} opened={opened.has(key)} retain={() => setOpened((prior) => prior.has(key) ? prior : new Set(prior).add(key))}
+      agentRef={agentRefs.get(entityKey(hostId, summary.agentId))}
+      workspaceRef={summary.workspaceId ? workspaceRefs.get(entityKey(hostId, summary.workspaceId)) : undefined}
+      theme={theme} controls={controls} openChat={navigation && (() => navigation.openAgent({ serverId: hostId, agentId: summary.agentId }))} />;
+  }
+  // Keep opened cards in the same keyed list even when a filter hides them.
+  const rows = [...groups].flatMap(([section, cards]) => cards.length ? [
+    <Text key={section} accessibilityRole="header"
+      style={{ color: theme.colors.foreground, fontWeight: "600" }}>{section}</Text>,
+    ...cards.map((card) => renderCard(card, true)),
+  ] : []);
+  for (const card of eligible) {
+    const key = entityKey(card.hostId, card.summary.id);
+    if (opened.has(key) && !visibleKeys.has(key)) rows.push(renderCard(card, false));
+  }
   return <ScrollView style={{ flex: 1, backgroundColor: theme.colors.surface0 }} contentContainerStyle={{ padding: 16, gap: 14 }}>
     <Text style={{ color: theme.colors.foreground, fontSize: 18, fontWeight: "600" }}>Open · {countLabel(inbox.count)}</Text>
     {inbox.sources.filter((source) => source.docketStatus !== "ready").map((source) =>
@@ -197,20 +249,7 @@ function InboxQueue({ theme, navigation, controls, inbox }: PluginScreenProps & 
     <TextInput accessibilityLabel="Filter by agent label" placeholder="Filter by agent label"
       placeholderTextColor={theme.colors.foregroundMuted} value={label} onChangeText={setLabel}
       style={{ color: theme.colors.foreground, padding: 8, borderWidth: 1, borderColor: theme.colors.border }} />
-    {/* Keep each card under the same parent when its delivery changes sections. */}
-    <View style={{ gap: 8 }}>
-      {[...groups].flatMap(([section, cards]) => cards.length ? [
-        <Text key={section} accessibilityRole="header"
-          style={{ color: theme.colors.foreground, fontWeight: "600" }}>{section}</Text>,
-        ...cards.map((card) => {
-          const { hostId, summary } = card;
-          return <Card key={entityKey(hostId, summary.id)} card={card} source={sources.get(hostId)} now={now}
-            agentRef={agentRefs.get(entityKey(hostId, summary.agentId))}
-            workspaceRef={summary.workspaceId ? workspaceRefs.get(entityKey(hostId, summary.workspaceId)) : undefined}
-            theme={theme} controls={controls} openChat={navigation && (() => navigation.openAgent({ serverId: hostId, agentId: summary.agentId }))} />;
-        }),
-      ] : [])}
-    </View>
+    <View style={{ gap: 8 }}>{rows}</View>
     {[...groups.values()].every((cards) => cards.length === 0) && <Text style={{ color: theme.colors.foregroundMuted }}>
       {hostFilter || workspaceFilter || needle ? "No cards match these filters."
         : inbox.count.kind === "exact" ? "Nothing waiting in Docket." : "No cards available yet."}
@@ -219,9 +258,8 @@ function InboxQueue({ theme, navigation, controls, inbox }: PluginScreenProps & 
 }
 
 function InboxPane({ active, children }: { active: boolean; children: ReactNode }) {
-  return <View role="tabpanel" style={{ flex: 1, display: active ? "flex" : "none" }}
-    accessibilityElementsHidden={!active} importantForAccessibility={active ? "auto" : "no-hide-descendants"}
-    pointerEvents={active ? "auto" : "none"}>
+  const { display, ...visibility } = paneVisibility(active);
+  return <View role="tabpanel" {...visibility} style={{ flex: 1, display }}>
     {children}
   </View>;
 }

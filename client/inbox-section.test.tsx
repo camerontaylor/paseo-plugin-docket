@@ -17,21 +17,22 @@ vi.mock("@getpaseo/plugin/client", () => ({
 vi.mock("@getpaseo/plugin/client/ui", () => ({ WorkspaceRowBadge: undefined }));
 vi.mock("./use-docket", () => ({ useDocketInbox: vi.fn() }));
 
-it("preserves expanded, unsaved and conflict state across section changes and tab switches", async () => {
+it.each(["collapse", "filter"])("preserves unsaved and conflict state across section, tab and %s transitions", async (transition) => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.mocked(Keyboard.dismiss).mockClear();
   const theme = { colors: {} } as PluginScreenProps["theme"];
   const summary: Summary = {
     id: "s_aaaaaa", rev: 1, agentId: "agent", workspaceId: null, summary: "Question",
     status: "open", createdAt: "2026-11-22T00:00:00Z", resolvedAt: null, openQuestions: 1,
     pendingDeliveries: 1, replacedBy: null, revises: null, compacted: false,
   };
-  const host = (serverId: string) => ({
-    serverId, label: serverId, status: "online" as const, docketStatus: "ready" as const,
+  const host = (serverId: string, docketStatus: "ready" | "stale") => ({
+    serverId, label: serverId, status: "online" as const, docketStatus,
     summaries: undefined, updatedAt: undefined,
   });
-  function update(hostId: string, pendingDeliveries: number) {
+  function update(hostId: string, pendingDeliveries: number, docketStatus: "ready" | "stale" = "ready") {
     vi.mocked(useDocketInbox).mockReturnValue({
-      sources: [host(hostId)], cards: [{ hostId, summary: { ...summary, pendingDeliveries } }],
+      sources: [host(hostId, docketStatus)], cards: [{ hostId, summary: { ...summary, pendingDeliveries } }],
       count: { kind: "exact", value: 1 },
     });
   }
@@ -67,6 +68,7 @@ it("preserves expanded, unsaved and conflict state across section changes and ta
     };
     const heading = () => renderer.root.findByProps({ accessibilityRole: "header" }).props.children;
     expect(heading()).toBe("Not delivered");
+    expect(renderer.root.findAllByType("button")).toHaveLength(0);
     await press("Answer in place");
     await act(() => renderer.root.findByType("button").props.onClick());
 
@@ -98,6 +100,37 @@ it("preserves expanded, unsaved and conflict state across section changes and ta
     await press("Decisions");
     expect(renderer.root.findByType("input").props.value).toBe("saved search");
     await press("Inbox");
+
+    function expectDraftHidden() {
+      let hidden = renderer.root.findByType("button").parent;
+      while (hidden && hidden.props.style?.display !== "none") hidden = hidden.parent;
+      expect(hidden?.props).toMatchObject({
+        accessibilityElementsHidden: true,
+        importantForAccessibility: "no-hide-descendants",
+        pointerEvents: "none",
+      });
+      expect(renderer.root.findByType("button").props.children).toEqual(["unsent answer", " · conflict"]);
+    }
+    if (transition === "collapse") {
+      await press("Hide details");
+      expectDraftHidden();
+      await press("Answer in place");
+    } else {
+      const filter = renderer.root.findByProps({ accessibilityLabel: "Filter by agent label" });
+      await act(() => filter.props.onChangeText("does not match"));
+      expect(renderer.root.findAllByProps({ accessibilityRole: "header" })).toHaveLength(0);
+      expectDraftHidden();
+      await act(() => filter.props.onChangeText(""));
+      expect(heading()).toBe("Agent stopped");
+    }
+    expect(renderer.root.findByType("button").props.children).toEqual(["unsent answer", " · conflict"]);
+
+    update("a", 0, "stale");
+    await act(() => renderer.update(<Screen {...({ theme } as PluginScreenProps)} />));
+    expectDraftHidden();
+    update("a", 0);
+    await act(() => renderer.update(<Screen {...({ theme } as PluginScreenProps)} />));
+    expect(renderer.root.findByType("button").props.children).toEqual(["unsent answer", " · conflict"]);
 
     update("b", 0);
     await act(() => renderer.update(<Screen {...({ theme } as PluginScreenProps)} />));
