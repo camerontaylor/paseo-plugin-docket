@@ -29,7 +29,7 @@ export function registerToolSettings(server: PluginServerContext) {
     version: 1,
     schema: settingsSchema,
   }));
-  return async () => {
+  async function readToolSettings() {
     try {
       const state = await settings.read();
       return state.status === "ready" ? state.values : settingsSchema.parse({ allowToolPermissions: false });
@@ -37,10 +37,19 @@ export function registerToolSettings(server: PluginServerContext) {
       console.warn("[docket] could not read host settings");
       return settingsSchema.parse({ agentTools: false, allowToolPermissions: false });
     }
-  };
+  }
+
+  async function readRetentionDays() {
+    const state = await settings.read();
+    // Ready includes parsed defaults for a first install. A failed read must
+    // never supply a fallback for evidence deletion.
+    return state.status === "ready" ? state.values.retentionDays : undefined;
+  }
+
+  return { readToolSettings, readRetentionDays };
 }
 
-type ReadSettings = ReturnType<typeof registerToolSettings>;
+type ReadSettings = ReturnType<typeof registerToolSettings>["readToolSettings"];
 const names = ["docket_show", "docket_close", "docket_get"] as const;
 const permissionNames = new Set(names.flatMap((name) => [`mcp__paseo__${name}`, `paseo.${name}`]));
 const surfaceId = z.string().refine(isSurfaceId, "Use a Docket surface id");

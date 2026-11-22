@@ -118,7 +118,7 @@ export function registerRpc(
     if ("agentId" in input) {
       await store.deleteAgentDecisions(input.agentId);
       if (store.decisions({ agentId: input.agentId, limit: 1 }).length) {
-        return { refusal: { code: "delivery-pending", message: "Some decisions still have a pending delivery" } };
+        return { refusal: { code: "delivery-pending", message: "Some decisions could not be deleted." } };
       }
       return {};
     }

@@ -73,7 +73,18 @@ it("projects store revisions and routes validated reads, edits and sends to the 
     expect(retry).toHaveBeenCalledWith(surfaceId, 1);
     expect(await call(decisionsSearch, { query: "Yes", agentId: "agent", limit: 1 })).toMatchObject([{ surfaceId, questionId: "answer" }]);
     expect(await call(decisionsDelete, { surfaceId, questionId: "answer" })).toMatchObject({ refusal: { code: "delivery-pending" } });
-    expect(await call(decisionsDelete, { agentId: "agent" })).toMatchObject({ refusal: { code: "delivery-pending" } });
+    const eligible = await store.create({ agentId: "agent", document: created.record.document! });
+    if (!eligible.ok) throw Error(eligible.refusal.message);
+    const eligibleId = eligible.record.id;
+    await call(draftSet, { ...draft, surfaceId: eligibleId });
+    await call(send, { surfaceId: eligibleId, targets: [{ target: "answer", version: 1 }] });
+    expect((await store.apply(eligibleId, {
+      kind: "updateDelivery", n: 1, to: "delivered", now: new Date().toISOString(),
+    })).ok).toBe(true);
+    expect(await call(decisionsDelete, { agentId: "agent" })).toEqual({
+      refusal: { code: "delivery-pending", message: "Some decisions could not be deleted." },
+    });
+    expect(await call(decisionsSearch, { agentId: "agent" })).toMatchObject([{ surfaceId }]);
     const settled = await store.apply(surfaceId, { kind: "updateDelivery", n: 1, to: "delivered", now: new Date().toISOString() });
     if (!settled.ok || !settled.record.resolvedAt) throw new Error("Expected a resolved surface");
     const rev = settled.record.rev;
