@@ -381,7 +381,7 @@ function matchesRecommendation(q: Question, item: string | undefined, d: DraftCo
 }
 
 /** What a send still needs from a draft, or an empty list when it can go. */
-function draftIncomplete(q: Question, item: string | undefined, d: DraftContent): string[] {
+export function draftIncomplete(q: Question, item: string | undefined, d: DraftContent): string[] {
   if (d.skipped) return [];
   if (q.kind === "review") return d.verdict === undefined ? ["a verdict is needed; a comment alone does not answer an item"] : [];
   if (q.kind === "text") {
