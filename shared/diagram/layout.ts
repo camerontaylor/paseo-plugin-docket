@@ -1,3 +1,4 @@
+import type { SeqEvent } from "./sequence";
 import type { Direction, Flowchart, FlowEdge, FlowNode } from "./flowchart";
 
 /**
@@ -219,8 +220,7 @@ export function layoutFlowchart(chart: Flowchart): FlowLayout {
   const longEdges = chart.edges.filter(spans);
   const laneBand = longEdges.length * LANE_GAP + (longEdges.length > 0 ? LANE_GAP : 0);
 
-  const contentBreadth = across ? widestRow : totalDepth;
-  const lanes = new Map(longEdges.map((edge, index) => [edge, contentBreadth + LANE_GAP * (index + 1)]));
+  const lanes = new Map(longEdges.map((edge, index) => [edge, widestRow + LANE_GAP * (index + 1)]));
 
   const edges = chart.edges.map((edge) =>
     route(edge, finals.get(edge.from), finals.get(edge.to), across, lanes.get(edge)),
@@ -298,44 +298,46 @@ function routeThroughLane(
   lane: number,
 ): LaidOutEdge {
   if (across) {
-    const startX = from.x + from.width;
-    const endX = to.x;
+    const direction = to.x >= from.x ? 1 : -1;
+    const startX = direction === 1 ? from.x + from.width : from.x;
+    const endX = direction === 1 ? to.x : to.x + to.width;
     const startY = from.y + from.height / 2;
     const endY = to.y + to.height / 2;
-    const outX = startX + LANE_GAP / 2;
-    const inX = endX - LANE_GAP / 2;
+    const outX = startX + direction * LANE_GAP / 2;
+    const inX = endX - direction * LANE_GAP / 2;
 
     return {
       ...edge,
       segments: [
-        span(startX, startY, outX - startX, LINE),
+        span(Math.min(startX, outX), startY, Math.abs(outX - startX), LINE),
         span(outX - LINE / 2, Math.min(startY, lane), LINE, Math.abs(lane - startY)),
         span(Math.min(outX, inX), lane, Math.abs(inX - outX), LINE),
         span(inX - LINE / 2, Math.min(endY, lane), LINE, Math.abs(lane - endY)),
-        span(inX, endY, endX - inX, LINE),
+        span(Math.min(inX, endX), endY, Math.abs(endX - inX), LINE),
       ],
-      arrowAt: edge.arrow ? { x: endX, y: endY, direction: "right" } : null,
+      arrowAt: edge.arrow ? { x: endX, y: endY, direction: direction === 1 ? "right" : "left" } : null,
       labelAt: { x: (outX + inX) / 2, y: lane },
     };
   }
 
-  const startY = from.y + from.height;
-  const endY = to.y;
+  const direction = to.y >= from.y ? 1 : -1;
+  const startY = direction === 1 ? from.y + from.height : from.y;
+  const endY = direction === 1 ? to.y : to.y + to.height;
   const startX = from.x + from.width / 2;
   const endX = to.x + to.width / 2;
-  const outY = startY + LANE_GAP / 2;
-  const inY = endY - LANE_GAP / 2;
+  const outY = startY + direction * LANE_GAP / 2;
+  const inY = endY - direction * LANE_GAP / 2;
 
   return {
     ...edge,
     segments: [
-      span(startX - LINE / 2, startY, LINE, outY - startY),
+      span(startX - LINE / 2, Math.min(startY, outY), LINE, Math.abs(outY - startY)),
       span(Math.min(startX, lane), outY, Math.abs(lane - startX), LINE),
       span(lane - LINE / 2, Math.min(outY, inY), LINE, Math.abs(inY - outY)),
       span(Math.min(lane, endX), inY, Math.abs(endX - lane), LINE),
-      span(endX - LINE / 2, inY, LINE, endY - inY),
+      span(endX - LINE / 2, Math.min(inY, endY), LINE, Math.abs(endY - inY)),
     ],
-    arrowAt: edge.arrow ? { x: endX, y: endY, direction: "down" } : null,
+    arrowAt: edge.arrow ? { x: endX, y: endY, direction: direction === 1 ? "down" : "up" } : null,
     labelAt: { x: lane, y: (outY + inY) / 2 },
   };
 }
@@ -405,6 +407,24 @@ export function layoutSequence(
     headerHeight: SEQ_HEADER,
     width: Math.max(0, cursor - SEQ_GAP),
     height: SEQ_HEADER + eventCount * SEQ_ROW + 12,
+  };
+}
+
+/** Geometry for a message between distinct lifelines. Self messages require a loop. */
+export function layoutSequenceMessage(event: Extract<SeqEvent, { kind: "message" }>, fromX: number, toX: number) {
+  if (fromX === toX) return null;
+  const left = Math.min(fromX, toX);
+  const width = Math.abs(toX - fromX);
+  const direction: "right" | "left" = toX > fromX ? "right" : "left";
+  const step = Math.max(10, width / 80);
+  const strokes = event.style === "solid" ? [{ x: 0, width }]
+    : Array.from({ length: Math.ceil(width / step) }, (_, index) => {
+      const x = index * step;
+      return { x, width: Math.min(step * 0.6, width - x) };
+    });
+  return {
+    left, width, strokes,
+    arrow: event.arrow === "none" ? null : { kind: event.arrow, direction, x: toX - left },
   };
 }
 

@@ -41,10 +41,13 @@ it("sends a display-only item comment with its title, once per draft", () => {
   if (!draft.ok) throw Error(draft.refusal.message);
   const comments = sendableComments(draft.record);
   expect(comments).toEqual([{ on: "plan.table", version: 1 }]);
-  const sent = applyCommand(draft.record, { kind: "send", targets: [], comments, now });
+  const sent = applyCommand(draft.record, {
+    kind: "send", targets: [], comments, now: "2026-11-23T12:00:00.000Z",
+  });
   if (!sent.ok) throw Error(sent.refusal.message);
   expect(sent.delivery?.text).toContain("Add the jobs table");
   expect(sent.delivery?.text).toContain("Keep the migration reversible");
+  expect(sent.record.resolvedAt).toBe(now);
   expect(sendableComments(sent.record)).toEqual([]);
 });
 

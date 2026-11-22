@@ -753,7 +753,7 @@ function sendRecord(record: SurfaceRecord, cmd: Send): Result {
     ...(sentComments.length ? { sentComments: sentCommentSnapshots } : {}),
   };
   const next = bump(record, { questions, drafts, comments, deliveries: [...record.deliveries, delivery] });
-  if (!hasOpenQuestion(next)) next.resolvedAt = cmd.now;
+  if (next.resolvedAt === null && !hasOpenQuestion(next)) next.resolvedAt = cmd.now;
   return done(next, delivery);
 }
 

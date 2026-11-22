@@ -5,12 +5,13 @@ import { parseFlowchart, type Flowchart, type NodeShape } from "../shared/diagra
 import {
   layoutFlowchart,
   layoutSequence,
+  layoutSequenceMessage,
   type FlowLayout,
   type LaidOutEdge,
   type LaidOutNode,
 } from "../shared/diagram/layout";
 import { parseSequence, type SeqEvent, type SequenceDiagram } from "../shared/diagram/sequence";
-const ARROW = 4;
+const arrows = { up: "▲", down: "▼", left: "◀", right: "▶" };
 type Size = { width: number; height: number };
 
 type ParsedDiagram =
@@ -101,19 +102,10 @@ function EdgeView({ edge, theme }: { edge: LaidOutEdge; theme: PluginTheme }) {
           }}
         />
       ))}
-      {edge.arrowAt ? (
-        <View
-          style={{
-            position: "absolute",
-            left: edge.arrowAt.x - ARROW,
-            top: edge.arrowAt.y - ARROW,
-            width: ARROW * 2,
-            height: ARROW * 2,
-            borderRadius: ARROW,
-            backgroundColor: color,
-          }}
-        />
-      ) : null}
+      {edge.arrowAt && <Text style={{
+        position: "absolute", left: edge.arrowAt.x - 6, top: edge.arrowAt.y - 6,
+        width: 12, lineHeight: 12, fontSize: 10, textAlign: "center", color,
+      }}>{arrows[edge.arrowAt.direction]}</Text>}
       {edge.label && edge.labelAt ? (
         <View
           style={{
@@ -215,19 +207,27 @@ function SequenceView({
             </View>
           );
         }
-        const x1 = centerById.get(ev.from) ?? 0;
-        const x2 = centerById.get(ev.to) ?? 0;
-        const left = Math.min(x1, x2);
-        const width = Math.max(20, Math.abs(x2 - x1));
+        const message = layoutSequenceMessage(ev, centerById.get(ev.from)!, centerById.get(ev.to)!);
+        if (!message) return null;
+        const color = theme.colors.accent;
+        const { arrow, strokes } = message;
         return (
-          <View key={idx} style={{ position: "absolute", left, top: y - 14, width }}>
-            <Text
-              numberOfLines={1}
-              style={{ color: theme.colors.foreground, fontSize: 11, textAlign: "center", marginBottom: 2 }}
-            >
+          <View key={idx} style={{ position: "absolute", left: message.left, top: y - 14, width: message.width }}>
+            <Text numberOfLines={1} style={{ color: theme.colors.foreground, fontSize: 11, textAlign: "center" }}>
               {ev.text}
             </Text>
-            <View style={{ height: 1.5, backgroundColor: theme.colors.accent }} />
+            <View style={{ height: 12, justifyContent: "center" }}>
+              {strokes.map(({ x, width }) => <View key={x} style={{
+                position: "absolute", left: x, width, height: 1.5, backgroundColor: color,
+              }} />)}
+              {arrow?.kind === "async" ? <View style={{
+                position: "absolute", left: arrow.x - (arrow.direction === "right" ? 7 : 0),
+                top: 3, width: 8, height: 1.5, backgroundColor: color,
+                transform: [{ rotate: arrow.direction === "right" ? "30deg" : "-30deg" }],
+              }} /> : arrow && <Text style={{
+                position: "absolute", left: arrow.x - 6, textAlign: "center", width: 12, lineHeight: 12, fontSize: 10, color,
+              }}>{arrow.kind === "cross" ? "×" : arrows[arrow.direction]}</Text>}
+            </View>
           </View>
         );
       })}

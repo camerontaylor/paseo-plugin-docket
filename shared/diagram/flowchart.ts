@@ -85,7 +85,18 @@ export function parseNodeExpression(raw: string): FlowNode | null {
     if (!text.endsWith(close)) continue;
     const id = text.slice(0, start).trim();
     if (!/^[\w.-]+$/.test(id)) continue;
-    const label = stripQuotes(text.slice(start + open.length, text.length - close.length));
+    const body = text.slice(start + open.length, text.length - close.length).trim();
+    const quote = body[0];
+    if (quote === '"' || quote === "'") {
+      // A quoted label may itself contain a closer. Its first unescaped quote
+      // must terminate the entire label.
+      let end = 1;
+      while (end < body.length && body[end] !== quote) end += body[end] === "\\" ? 2 : 1;
+      if (end >= body.length || body.slice(end + 1).trim()) return null;
+    } else if ((body + close).indexOf(close) !== body.length) {
+      return null;
+    }
+    const label = stripQuotes(body);
     return { id, label: label.length > 0 ? label : id, shape };
   }
 

@@ -17,7 +17,7 @@ interface DraftComparison {
 
 const discardedMessage = {
   "target-not-open": "An unsaved edit was discarded because its question or review item is no longer open.",
-  closed: "Unsaved edits were discarded because the surface is closed.",
+  closed: "An unsaved edit was discarded because its target is closed.",
 };
 
 export function useQuestionActions(

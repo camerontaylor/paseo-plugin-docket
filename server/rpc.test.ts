@@ -6,8 +6,10 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { expect, it, vi } from "vitest";
 import { commentSet, decisionsDelete, decisionsSearch, deliveryRetry, draftSet, evidenceCheck, evidenceGet, send, surfaceGet, surfaces, surfacesList, type SurfaceEvent } from "../shared/rpc";
 import { registerRpc } from "./rpc";
-import { openStore } from "./store";
+import { openStore, type Store } from "./store";
 import { loadEvidence } from "./evidence/load";
+import * as confine from "./evidence/confine";
+import { LIMITS } from "../shared/limits";
 
 it("projects store revisions and routes validated reads, edits and sends to the store", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "docket-rpc-"));
@@ -134,5 +136,48 @@ it("projects store revisions and routes validated reads, edits and sends to the 
     controller.abort();
     vi.useRealTimers();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("settles a stalled evidence read at the deadline and keeps legacy snapshots frozen", async () => {
+  const cwd = "/workspace";
+  const snapshot = { kind: "file", path: "queue.txt", fileHash: "hash", hash: "excerpt", bytes: 4, readAt: "2026-11-22T12:00:00Z" };
+  const record = {
+    agentId: "agent", workspaceId: null, document: { v: 1, summary: "Review" },
+    snapshots: { "1": { ...snapshot, cwd }, "2": snapshot },
+  };
+  const handlers = new Map<string, (input: unknown, context: unknown) => unknown>();
+  const server = { handle: (contract, handle) => handlers.set(contract.name, handle) } as PluginServerContext;
+  registerRpc(server, async () => ({ get: () => record }) as unknown as Store, async () => ({ retry: vi.fn() }));
+  const refresh = vi.fn(async () => ({}));
+  const paseo = {
+    hosts: { list: async () => ({ self: { serverId: "host-a" } }) },
+    agents: { ref: () => ({ cwd, workspaceId: null, refresh }) },
+  };
+  const check = (snapshotId: string) => handlers.get(evidenceCheck.name)!({ surfaceId: "s_test01", snapshotId }, { paseo });
+  const unavailable = { hostId: "host-a", result: { status: "unavailable" } };
+  await expect(check("2")).resolves.toEqual(unavailable);
+  expect(refresh).not.toHaveBeenCalled();
+
+  let started!: (signal: AbortSignal | undefined) => void;
+  let failRead!: (reason: Error) => void;
+  const reading = new Promise<AbortSignal | undefined>((resolve) => { started = resolve; });
+  const read = vi.spyOn(confine, "readConfinedText").mockImplementationOnce((_path, options) => {
+    started(options.signal);
+    return new Promise((_resolve, reject) => { failRead = reject; });
+  });
+  vi.useFakeTimers();
+  try {
+    const result = check("1");
+    const signal = await reading;
+    expect(signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(LIMITS.evidenceBudgetMs);
+    await expect(result).resolves.toEqual(unavailable);
+    expect(signal?.aborted).toBe(true);
+    failRead(new Error("Late read rejection"));
+    await vi.advanceTimersByTimeAsync(0);
+  } finally {
+    read.mockRestore();
+    vi.useRealTimers();
   }
 });

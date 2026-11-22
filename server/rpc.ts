@@ -7,6 +7,7 @@ import type { startDelivery } from "./delivery";
 import type { PaseoApi } from "./delivery-host";
 import { LIMITS } from "../shared/limits";
 import { agentStorage } from "./tools";
+import { makeDeadline, TIMED_OUT } from "./evidence/deadline";
 import { readEvidence, snapshotStatus } from "./evidence/store";
 
 function saved<T>(result: StoreResult, success: (record: Extract<StoreResult, { ok: true }>["record"]) => T) {
@@ -100,30 +101,29 @@ export function registerRpc(
     if (!record?.document || !hasOwn(record.snapshots, snapshotId)) return { status: "unavailable" };
     const snapshot = record.snapshots[snapshotId];
     const kind = snapshot.kind;
-    if (kind !== "file" && kind !== "changes") return { status: "unavailable" };
+    if (typeof snapshot.cwd !== "string" || (kind !== "file" && kind !== "changes")) return { status: "unavailable" };
+    const deadline = makeDeadline(LIMITS.evidenceBudgetMs);
+    const unavailable = { status: "unavailable" } as const;
     try {
-      const agent = paseo.agents.ref(record.agentId);
-      if (!await agent.refresh()) return { status: "unavailable" };
-      const cwd = agent.cwd;
-      if (!cwd || agent.workspaceId !== record.workspaceId || (snapshot.cwd !== undefined && snapshot.cwd !== cwd)) {
-        return { status: "unavailable" };
-      }
-      const settings = await readSettings?.();
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), LIMITS.evidenceBudgetMs);
-      try {
-        const result = await snapshotStatus({ ...snapshot, kind }, {
+      const result = await deadline.guard((async () => {
+        const agent = paseo.agents.ref(record.agentId);
+        if (!await agent.refresh() || deadline.signal.aborted) return unavailable;
+        const cwd = agent.cwd;
+        if (!cwd || agent.workspaceId !== record.workspaceId || snapshot.cwd !== cwd) return unavailable;
+        const settings = await readSettings?.();
+        if (deadline.signal.aborted) return unavailable;
+        return snapshotStatus({ ...snapshot, kind }, {
           cwd,
           extraRoots: [agentStorage(record.agentId), "/tmp", ...(settings?.extraFolders ?? [])],
-          signal: controller.signal,
+          signal: deadline.signal,
           includeCurrentRef: true,
         });
-        return controller.signal.aborted ? { status: "unavailable" } : result;
-      } finally {
-        clearTimeout(timer);
-      }
+      })());
+      return result === TIMED_OUT || deadline.signal.aborted ? unavailable : result;
     } catch {
-      return { status: "unavailable" };
+      return unavailable;
+    } finally {
+      deadline.stop();
     }
   }));
   server.handle(draftSet, ({ surfaceId, ...fields }, { paseo }) => reply(paseo, async (store) => {

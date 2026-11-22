@@ -4,7 +4,7 @@
  */
 
 export type MessageStyle = "solid" | "dashed";
-export type ArrowHead = "none" | "open" | "filled" | "async";
+export type ArrowHead = "none" | "cross" | "filled" | "async";
 
 export interface SeqParticipant {
   id: string;
@@ -30,11 +30,11 @@ const NOTE = /^note\s+(?:(over)\s+([\w.,\s-]+)|(?:left|right)\s+of\s+([\w.-]+))\
 const ARROWS: { token: string; style: MessageStyle; arrow: ArrowHead }[] = [
   { token: "--)", style: "dashed", arrow: "async" },
   { token: "-->>", style: "dashed", arrow: "filled" },
-  { token: "--x", style: "dashed", arrow: "open" },
+  { token: "--x", style: "dashed", arrow: "cross" },
   { token: "-->", style: "dashed", arrow: "none" },
   { token: "->>", style: "solid", arrow: "filled" },
   { token: "-)", style: "solid", arrow: "async" },
-  { token: "-x", style: "solid", arrow: "open" },
+  { token: "-x", style: "solid", arrow: "cross" },
   { token: "->", style: "solid", arrow: "none" },
 ];
 
@@ -100,7 +100,7 @@ export function parseSequence(source: string): SequenceDiagram | null {
     const at = head.indexOf(arrow.token);
     const from = head.slice(0, at).trim();
     const to = head.slice(at + arrow.token.length).trim();
-    if (!/^[\w.-]+$/.test(from) || !/^[\w.-]+$/.test(to)) {
+    if (from === to || !/^[\w.-]+$/.test(from) || !/^[\w.-]+$/.test(to)) {
       skipped.push(original.trim());
       continue;
     }
