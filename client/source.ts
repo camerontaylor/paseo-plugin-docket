@@ -8,7 +8,7 @@ const SNAPSHOT_TIMEOUT = 10_000;
 const POLL_TIMEOUT = 10_000;
 
 export function startSource(client: Pick<PluginClientContext, "rpc" | "subscribe">, hub: Hub = getHub()) {
-  const source = { rpc: client.rpc.bind(client) };
+  const source = client;
   let hostId: string | undefined;
   let stopped = false;
   let delay = MIN_DELAY;
