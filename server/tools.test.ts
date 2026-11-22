@@ -43,7 +43,9 @@ function context(id: string): AgentToolContext {
 async function call(name: string, input: object, agentId = "agent") {
   const tool = createDocketTools(async () => store, readSettings).find((tool) => tool.name === name);
   if (!tool) throw new Error(`No tool named ${name}`);
-  return tool.execute(await tool.input.parseAsync(input), context(agentId));
+  const wire = z.toJSONSchema(tool.input, { io: "input" });
+  const hostInput = await z.fromJSONSchema(wire).parseAsync(input);
+  return tool.execute(await tool.input.parseAsync(hostInput), context(agentId));
 }
 
 async function show(input: object | string, agentId = "agent"): Promise<string> {
@@ -66,8 +68,16 @@ describe("Docket tools", () => {
     expect(attached.env).toEqual({ EXISTING: "yes", DOCKET_STORAGE: path.join(store.root, "agents", "agent") });
     expect((await stat(attached.env.DOCKET_STORAGE)).mode & 0o777).toBe(0o700);
     const schema = z.toJSONSchema(attached.tools[0].input, { io: "input" });
-    expect(schema).toMatchObject(SHOW_INPUT_SCHEMA);
-    expect(Buffer.byteLength(JSON.stringify(schema))).toBeLessThanOrEqual(TOOL_SCHEMA_MAX_BYTES);
+    expect(schema).toMatchObject({
+      type: "object",
+      properties: { surface: { anyOf: [{}, SHOW_INPUT_SCHEMA.properties.surface] } },
+      required: ["surface"],
+    });
+    const advertised = z.toJSONSchema(z.fromJSONSchema(schema), { io: "input" });
+    for (const wire of [schema, advertised]) {
+      expect(Buffer.byteLength(JSON.stringify(wire))).toBeLessThanOrEqual(TOOL_SCHEMA_MAX_BYTES);
+      for (const keyword of ["oneOf", "anyOf", "allOf"]) expect(wire).not.toHaveProperty(keyword);
+    }
     expect(await attachDocketTools(request, async () => ({ ...settings, agentTools: false }), async () => store)).toBe(request);
   });
 

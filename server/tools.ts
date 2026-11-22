@@ -130,9 +130,11 @@ export function createDocketTools(getStore: () => Promise<Store>, readSettings: 
     name: names[0],
     title: "Show a Docket surface",
     description: TOOL_INSTRUCTIONS,
-    // The advertised schema guides the caller. Preserve the original input for
-    // the validator, which reports all problems with document-relative pointers.
-    input: z.looseObject({ surface: z.unknown().meta(SHOW_INPUT_SCHEMA.properties.surface) }),
+    // Paseo reconstructs and checks the wire schema before dispatch. Keep a
+    // permissive branch so Docket can report every document problem together.
+    input: z.looseObject({
+      surface: z.unknown().meta({ anyOf: [{}, SHOW_INPUT_SCHEMA.properties.surface] }),
+    }),
     async execute(input, { agent, signal }) {
       const checked = acceptToolInput(input);
       if (!checked.ok || !checked.document) {
