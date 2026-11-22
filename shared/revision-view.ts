@@ -5,7 +5,7 @@ import { itemAddress } from "./ids";
 import { own, type DraftContent, type ItemAnswerRecord, type SurfaceRecord } from "./record";
 
 type Feedback = { prompt: string; answer?: ItemAnswerRecord; draft?: DraftContent };
-type ChangeIdentity = { path: string; oldPath?: string; hunk?: string };
+type ChangeIdentity = { path: string; oldPath?: string; hunk?: { body?: string } };
 type Item = {
   change?: ChangeIdentity;
   title: string;
@@ -68,13 +68,13 @@ function inventory(record: SurfaceRecord, changes: ChangesText) {
               patch ? JSON.stringify(["file", path, oldPath, status, added, removed, patch]) : undefined);
             item.change = { path, oldPath };
             const sections = splitHunks(patch);
-            const occurrences = new Map<string, number>();
             hunks?.forEach(({ id: hunkId, header }, index) => {
-              const occurrence = (occurrences.get(header) ?? 0) + 1;
-              occurrences.set(header, occurrence);
+              const section = sections[index];
+              const prefix = `${header}\n`;
+              const body = section?.startsWith(prefix) ? section.slice(prefix.length) : undefined;
               const hunk = add(itemAddress(id, hunkId), `${path} ${header}`,
-                sections[index] === undefined ? undefined : JSON.stringify(["hunk", path, oldPath, sections[index]]));
-              hunk.change = { path, oldPath, hunk: JSON.stringify([header, occurrence]) };
+                body ? JSON.stringify(["hunk", path, oldPath, section]) : undefined);
+              hunk.change = { path, oldPath, hunk: { body: body || undefined } };
             });
           }
         } catch {
@@ -133,15 +133,76 @@ function inventory(record: SurfaceRecord, changes: ChangesText) {
   return { items, changeBlocks, loadedBlocks };
 }
 
-function changeKey(block: string, path: string, hunk?: string) {
-  return JSON.stringify([block, path, hunk]);
+function changeKey(block: string, path: string) {
+  return JSON.stringify([block, path]);
+}
+
+function blockOf(key: string) {
+  return key.startsWith("review:") ? "" : key.split(".", 1)[0];
+}
+
+type Hunk = { address: string; body?: string };
+
+function hunksByFile(items: Map<string, Item>) {
+  const files = new Map<string, Hunk[]>();
+  for (const [address, { change }] of items) {
+    if (!change?.hunk) continue;
+    const key = changeKey(blockOf(address), change.path);
+    const entry = { address, body: change.hunk.body };
+    const hunks = files.get(key);
+    if (hunks) hunks.push(entry);
+    else files.set(key, [entry]);
+  }
+  return files;
+}
+
+function uniqueBodies(hunks: Hunk[]) {
+  const bodies = new Map<string, string | null>();
+  for (const { address, body } of hunks) {
+    if (body !== undefined) bodies.set(body, bodies.has(body) ? null : address);
+  }
+  return bodies;
+}
+
+function matchHunks(fileMatches: Map<string, { block: string; path: string }>, before: Map<string, Item>, after: Map<string, Item>) {
+  const oldHunks = hunksByFile(before);
+  const newHunks = hunksByFile(after);
+  const matches = new Map<string, string>();
+  const uncertainCurrent = new Set<string>();
+  const uncertainPrior = new Set<string>();
+  for (const [destination, { block, path }] of fileMatches) {
+    const prior = oldHunks.get(changeKey(block, path)) ?? [];
+    const current = newHunks.get(destination) ?? [];
+    if ([...prior, ...current].some(({ body }) => body === undefined)) {
+      for (const { address } of current) uncertainCurrent.add(address);
+      for (const { address } of prior) uncertainPrior.add(address);
+      continue;
+    }
+    const priorBodies = uniqueBodies(prior);
+    const currentBodies = uniqueBodies(current);
+    const matched = new Set<string>();
+    // Header coordinates can collide after a shift. The full body, including
+    // context, must occur exactly once in each version of this file.
+    for (const [body, address] of currentBodies) {
+      const earlier = priorBodies.get(body);
+      if (!address || !earlier) continue;
+      matches.set(address, earlier);
+      matched.add(earlier);
+    }
+    const remainingCurrent = current.filter(({ address }) => !matches.has(address));
+    const remainingPrior = prior.filter(({ address }) => !matched.has(address));
+    if (remainingCurrent.length && remainingPrior.length) {
+      for (const { address } of remainingCurrent) uncertainCurrent.add(address);
+      for (const { address } of remainingPrior) uncertainPrior.add(address);
+    }
+  }
+  return { matches, uncertainCurrent, uncertainPrior };
 }
 
 export function revisionView(record: SurfaceRecord, earlier: SurfaceRecord, currentChanges: ChangesText, earlierChanges: ChangesText) {
   if (record.revises !== earlier.id || record.agentId !== earlier.agentId) return null;
   const prior = inventory(earlier, earlierChanges);
   const next = inventory(record, currentChanges);
-  const owner = (key: string) => key.startsWith("review:") ? "" : key.split(".", 1)[0];
   const before = prior.items;
   const changeBlocks = new Set([...prior.changeBlocks, ...next.changeBlocks]);
   const missing = new Set([...changeBlocks].filter((block) =>
@@ -150,17 +211,17 @@ export function revisionView(record: SurfaceRecord, earlier: SurfaceRecord, curr
   // Snapshot addresses are local to a surface. Use paths to find the old address.
   const oldAddresses = new Map<string, string>();
   const renameClaims = new Map<string, number>();
-  const fileMatches = new Map<string, string>();
+  const fileMatches = new Map<string, { block: string; path: string }>();
   const claimed = new Set<string>();
   const uncertainCurrent = new Set<string>();
   const uncertainEarlier = new Set<string>();
   for (const [key, { change }] of before) {
-    if (change) oldAddresses.set(changeKey(owner(key), change.path, change.hunk), key);
+    if (change && !change.hunk) oldAddresses.set(changeKey(blockOf(key), change.path), key);
   }
   const nextFiles = [...next.items].flatMap(([key, { change }]) =>
-    change && change.hunk === undefined && !missing.has(owner(key)) ? [{ block: owner(key), ...change }] : []);
+    change && change.hunk === undefined && !missing.has(blockOf(key)) ? [{ block: blockOf(key), ...change }] : []);
   function match(block: string, path: string, previousPath: string) {
-    fileMatches.set(changeKey(block, path), previousPath);
+    fileMatches.set(changeKey(block, path), { block, path: previousPath });
     claimed.add(changeKey(block, previousPath));
   }
 
@@ -193,7 +254,7 @@ export function revisionView(record: SurfaceRecord, earlier: SurfaceRecord, curr
       continue;
     }
     for (const [key, { change }] of before) {
-      if (!change || change.hunk !== undefined || owner(key) !== block) continue;
+      if (!change || change.hunk !== undefined || blockOf(key) !== block) continue;
       const priorPath = changeKey(block, change.path);
       if (claimed.has(priorPath)) continue;
       if (change.path === path || change.oldPath === path || (oldPath && [change.path, change.oldPath].includes(oldPath))) {
@@ -204,19 +265,20 @@ export function revisionView(record: SurfaceRecord, earlier: SurfaceRecord, curr
     if (oldPath) uncertainCurrent.add(destination);
   }
 
+  const hunks = matchHunks(fileMatches, before, next.items);
   const current = new Map<string, RevisionItem>();
   for (const [key, item] of record.document ? next.items : []) {
-    const block = owner(key);
+    const block = blockOf(key);
     let priorKey: string | undefined = key;
     if (changeBlocks.has(block)) {
       priorKey = undefined;
       const change = item.change;
       if (change && !missing.has(block)) {
         const matched = fileMatches.get(changeKey(block, change.path));
-        if (matched) priorKey = oldAddresses.get(changeKey(block, matched, change.hunk));
+        if (matched) priorKey = change.hunk ? hunks.matches.get(key) : oldAddresses.get(changeKey(block, matched.path));
       }
     }
-    const uncertain = item.change && uncertainCurrent.has(changeKey(block, item.change.path));
+    const uncertain = hunks.uncertainCurrent.has(key) || (item.change && uncertainCurrent.has(changeKey(block, item.change.path)));
     const previous = priorKey === undefined ? undefined : before.get(priorKey);
     const mark = previous
       ? previous.signature !== undefined && item.signature !== undefined
@@ -228,11 +290,11 @@ export function revisionView(record: SurfaceRecord, earlier: SurfaceRecord, curr
   }
   const removed = [...before].map(([key, item]) => ({
     key, title: item.title,
-    mark: record.document && earlier.document && !missing.has(owner(key)) && !key.startsWith("retained:") &&
-      !(item.change && uncertainEarlier.has(changeKey(owner(key), item.change.path)))
+    mark: record.document && earlier.document && !missing.has(blockOf(key)) && !key.startsWith("retained:") && !hunks.uncertainPrior.has(key) &&
+      !(item.change && uncertainEarlier.has(changeKey(blockOf(key), item.change.path)))
       ? "Removed" as const : undefined,
     earlier: item,
   }));
-  const incomplete = !earlier.document || missing.size > 0 || [...current.values()].some(({ mark }) => !mark);
+  const incomplete = !earlier.document || missing.size > 0 || hunks.uncertainPrior.size > 0 || [...current.values()].some(({ mark }) => !mark);
   return { current, removed, incomplete };
 }

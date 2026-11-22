@@ -67,7 +67,7 @@ it("compares frozen files and hunks independently, and avoids claiming equality 
     ], notes: [],
   })]]);
   expect([...revisionView(current, earlier, frozen("new"), frozen("old"))!.current.values()].map(({ mark }) => mark))
-    .toEqual(["Changed", "Changed", "Unchanged"]);
+    .toEqual(["Changed", undefined, "Unchanged"]);
   expect(revisionView(current, earlier, frozen("new"), empty)?.incomplete).toBe(true);
 });
 
@@ -193,7 +193,7 @@ it("claims each corroborated rename even when a sibling reuses an old path", () 
   expect(view.incomplete).toBe(false);
 });
 
-it("preserves shifted hunk feedback separately when the header no longer identifies it", () => {
+it("preserves hunk feedback separately when both the header and body change", () => {
   const document: SurfaceDocument = { v: 1, summary: "Diff", view: { t: "changes", id: "diff" } };
   const earlier = make(document);
   earlier.comments["diff.f1h1"] = { version: 1, text: "Earlier hunk feedback", delivery: null };
@@ -202,10 +202,69 @@ it("preserves shifted hunk feedback separately when the header no longer identif
     const header = `@@ -${line},1 +${line},1 @@`;
     return new Map([["diff", JSON.stringify({
       files: [{ id: "f1", path: "a.ts", status: "changed", added: 1, removed: 1,
-        patch: `${header}\n-old\n+new`, hunks: [{ id: "f1h1", header }] }], notes: [],
+        patch: `${header}\n-old\n+new ${line}`, hunks: [{ id: "f1h1", header }] }], notes: [],
     })]]);
   };
   const view = revisionView(current, earlier, evidence(11), evidence(10))!;
   expect(view.current.get("diff.f1h1")?.earlier).toBeUndefined();
-  expect(view.removed).toMatchObject([{ mark: "Removed", earlier: { draftComment: "Earlier hunk feedback" } }]);
+  expect(view.incomplete).toBe(true);
+  expect(view.removed).toMatchObject([{ mark: undefined, earlier: { draftComment: "Earlier hunk feedback" } }]);
+});
+
+it("follows unique hunk bodies when shifted ranges collide with earlier headers", () => {
+  const { current, earlier, evidence } = hunkComparison();
+  const result = revisionView(current, earlier, evidence([[20, "first"], [30, "second"]]),
+    evidence([[10, "first"], [20, "second"]]))!;
+  expect(result.current.get("diff.f1h1")?.earlier?.draftComment).toBe("Earlier first");
+  expect(result.current.get("diff.f1h2")?.earlier?.draftComment).toBe("Earlier second");
+  expect(result.current.get("diff.f1h1")?.mark).toBe("Changed");
+  expect(result.removed).toEqual([]);
+  expect(result.incomplete).toBe(false);
+});
+
+it.each([
+  { next: [[10, "same"], [30, "same"]], prior: [[10, "same"], [20, "same"]] },
+  { next: [[10, "same"]], prior: [[10, "same"], [20, "same"]] },
+  { next: [[10, "same"], [30, "same"]], prior: [[10, "same"]] },
+] as { next: [number, string][]; prior: [number, string][] }[])(
+  "keeps repeated hunk content ambiguous when it occurs more than once on either side",
+  ({ next, prior }) => {
+    const { current, earlier, evidence } = hunkComparison();
+    if (prior.length === 1) delete earlier.comments["diff.f1h2"];
+    const result = revisionView(current, earlier, evidence(next), evidence(prior))!;
+    expect(result.incomplete).toBe(true);
+    for (let index = 1; index <= next.length; index++) {
+      expect(result.current.get(`diff.f1h${index}`)).toMatchObject({ mark: undefined, earlier: undefined });
+    }
+    expect(result.removed.map((item) => [item.mark, item.earlier?.draftComment])).toEqual(
+      [[undefined, "Earlier first"], [undefined, "Earlier second"]].slice(0, prior.length),
+    );
+  },
+);
+
+function hunkComparison() {
+  const document: SurfaceDocument = { v: 1, summary: "Diff", view: { t: "changes", id: "diff" } };
+  const earlier = make(document);
+  earlier.comments["diff.f1h1"] = { version: 1, text: "Earlier first", delivery: null };
+  earlier.comments["diff.f1h2"] = { version: 1, text: "Earlier second", delivery: null };
+  const current = make({ ...document, revises: earlier.id }, earlier);
+  function evidence(rows: [number, string][]) {
+    const hunks = rows.map(([line], index) => ({ id: `f1h${index + 1}`, header: `@@ -${line},1 +${line},1 @@` }));
+    const patch = rows.map(([, text], index) => `${hunks[index].header}\n-before ${text}\n+after ${text}\n`).join("");
+    return new Map([["diff", JSON.stringify({
+      files: [{ id: "f1", path: "a.ts", status: "changed", added: rows.length, removed: rows.length, patch, hunks }], notes: [],
+    })]]);
+  }
+  return { current, earlier, evidence };
+}
+
+it("cannot establish a unique body if the paired file has an unreadable hunk", () => {
+  const { current, earlier, evidence } = hunkComparison();
+  const prior = evidence([[10, "first"], [20, "second"]]);
+  // Leave the advertised second hunk header in place while omitting its body.
+  prior.set("diff", prior.get("diff")!.replace("\\n-before second\\n+after second\\n", "\\n"));
+  const view = revisionView(current, earlier, evidence([[10, "first"], [20, "second"]]), prior)!;
+  expect(view.current.get("diff.f1h1")?.earlier).toBeUndefined();
+  expect(view.incomplete).toBe(true);
+  expect(view.removed[0]).toMatchObject({ mark: undefined, earlier: { draftComment: "Earlier first" } });
 });
