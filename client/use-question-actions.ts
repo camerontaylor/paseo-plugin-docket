@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { draftSet, send, deliveryRetry } from "../shared/rpc";
 import { own, type DraftContent, type SurfaceRecord } from "../shared/record";
 import type { Conflict } from "../shared/transitions";
+import { drainDraftWrites, type DraftWriteResult, type Edit } from "./draft-write-queue";
 import { callHost, getHub } from "./hub";
 import { draftWriteInput, openTargets, recommendations, sendableTargets } from "./question-drafts";
 
@@ -11,10 +12,10 @@ interface DraftComparison {
   current: Conflict["current"];
 }
 
-interface Edit {
-  content: DraftContent | null;
-  version: number;
-}
+const discardedMessage = {
+  "target-not-open": "An unsaved edit was discarded because its question or review item is no longer open.",
+  closed: "Unsaved edits were discarded because the surface is closed.",
+};
 
 export function useQuestionActions(
   hostId: string,
@@ -24,6 +25,7 @@ export function useQuestionActions(
   const surfaceId = record.id;
   const hub = getHub();
   const [error, setError] = useState<string>();
+  const [discarded, setDiscarded] = useState<string>();
   const [comparison, setComparison] = useState<DraftComparison[]>([]);
   const [pending, setPending] = useState(false);
   const [unsaved, setUnsaved] = useState(false);
@@ -34,14 +36,16 @@ export function useQuestionActions(
   const submitting = useRef(false);
   const acknowledged = useRef(new Map<string, number>());
 
-  async function write(target: string, edit: Edit) {
+  async function write(target: string, edit: Edit): Promise<DraftWriteResult> {
     const reply = await callHost(hub, hostId, draftSet, draftWriteInput(surfaceId, target, edit.version, edit.content));
     if ("version" in reply) return reply.version;
     if ("conflict" in reply) {
       setComparison([{ target, viewed: edits.current.has(target) ? edits.current.get(target)!.content : edit.content, current: reply.conflict }]);
       throw new Error("The draft changed on another client. Review both drafts before editing again.");
     }
-    throw new Error(reply.refusal.message);
+    const { code, message } = reply.refusal;
+    if (code === "target-not-open" || code === "closed") return code;
+    throw new Error(message);
   }
 
   async function flush() {
@@ -51,16 +55,12 @@ export function useQuestionActions(
     setPending(true);
     setError(undefined);
     setComparison([]);
+    setDiscarded(undefined);
     try {
       do {
-        while (edits.current.size) {
-          const [target, edit] = edits.current.entries().next().value!;
-          const version = await write(target, edit);
-          acknowledged.current.set(target, version);
-          const next = edits.current.get(target);
-          if (next === edit) edits.current.delete(target);
-          else if (next) next.version = version;
-        }
+        await drainDraftWrites(edits.current, acknowledged.current, write, (reason) => {
+          setDiscarded(discardedMessage[reason]);
+        });
         await refresh();
       } while (edits.current.size);
     } catch (cause) {
@@ -116,6 +116,7 @@ export function useQuestionActions(
         })) : [];
       for (const { target, content } of additions) {
         const version = await write(target, { content, version: own(record.drafts, target)?.version ?? 0 });
+        if (typeof version !== "number") throw new Error("The question or surface is no longer open. Review its current state and try again.");
         viewed.set(target, content);
         targets.push({ target, version });
       }
@@ -137,7 +138,7 @@ export function useQuestionActions(
   }
 
   return {
-    error, comparison, pending, unsaved, save, submit, retry,
+    error, discarded, comparison, pending, unsaved, save, submit, retry,
     retryDrafts: flush,
     resolveDraft(target: string, keepMine: boolean) {
       if (running.current) return;

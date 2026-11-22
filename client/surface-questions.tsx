@@ -214,6 +214,7 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
           <Copy muted>{`Delivery ${delivery.n} · ${deliveryLabels[delivery.state]}`}</Copy>
           <Button label="Retry" disabled={sendDisabled} onPress={() => void actions.retry(delivery.n)} />
         </View>)}
+      {!!actions.discarded && <Text accessibilityLiveRegion="polite" style={{ color: theme.colors.foregroundMuted }}>{actions.discarded}</Text>}
       {!!actions.error && <Text accessibilityLiveRegion="polite" style={{ color: theme.colors.statusDanger }}>{actions.error}</Text>}
       {actions.unsaved && !actions.comparison.length && <Button label="Retry saving drafts"
         disabled={actions.pending || orphaned} onPress={() => void actions.retryDrafts()} />}
