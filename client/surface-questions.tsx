@@ -1,11 +1,11 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
-import type { PluginHostProps } from "@getpaseo/plugin/client";
+import { useAgent, useAgents, type PluginHostProps } from "@getpaseo/plugin/client";
 import { optionParts, reviewVerdicts, type Question } from "../shared/document";
 import { itemAddress } from "../shared/ids";
 import { LIMITS } from "../shared/limits";
 import { own, type Delivery, type DraftContent, type ItemRecord, type QuestionRecord, type SurfaceRecord } from "../shared/record";
-import { openTargets, recommendation, recommendations, sendableTargets } from "./question-drafts";
+import { draftPreview, openTargets, recommendation, recommendations, sendableTargets, submittedPreview } from "./question-drafts";
 import { useQuestionActions } from "./use-question-actions";
 
 const Theme = createContext<PluginHostProps["theme"]["colors"] | null>(null);
@@ -65,27 +65,25 @@ function BoundedText({ text }: { text: string }) {
 
 const deliveryLabels: Record<Delivery["state"], string> = {
   queued: "Sending",
-  held: "Not delivered · Held",
+  held: "Not delivered · Held for Retry",
   uncertain: "Checking",
   delivered: "Delivered",
   failed: "Not delivered",
   removed: "Removed from the agent's queue",
 };
 
-function DeliveryMark({ delivery }: { delivery: Delivery }) {
-  return <Copy muted>{deliveryLabels[delivery.state]}</Copy>;
+type AgentWait = "permission" | "turn" | null;
+
+function deliveryLabel(delivery: Delivery, wait: AgentWait) {
+  const label = deliveryLabels[delivery.state];
+  if (delivery.state !== "queued" || delivery.sent) return label;
+  if (wait === "permission") return `${label} · Waiting for permission`;
+  if (wait === "turn") return `${label} · Waiting for the turn to end`;
+  return delivery.enqueued ? `${label} · In the agent's queue` : label;
 }
 
 function DraftPreview({ draft }: { draft?: DraftContent | { text: string } | null }) {
-  if (draft && "text" in draft) return <Copy>{draft.text}</Copy>;
-  const parts = draft?.skipped ? ["Skipped"] : [
-    Array.isArray(draft?.value) ? draft.value.join(", ") : draft?.value,
-    draft?.verdict,
-    draft?.other && `Other: ${draft.other}`,
-    draft?.note && `Note: ${draft.note}`,
-    draft?.comment && `Comment: ${draft.comment}`,
-  ];
-  return <Copy>{parts.filter(Boolean).join("\n") || "Empty"}</Copy>;
+  return <Copy>{draftPreview(draft)}</Copy>;
 }
 
 type Actions = ReturnType<typeof useQuestionActions>;
@@ -141,20 +139,20 @@ function TargetControls({ question, target, item, actions, disabled }: {
   </View>;
 }
 
-function State({ entry, record, target }: { entry: QuestionRecord | ItemRecord; record: SurfaceRecord; target: string }) {
+function State({ entry, record, target, wait }: { entry: QuestionRecord | ItemRecord; record: SurfaceRecord; target: string; wait: AgentWait }) {
   const answer = entry.answer;
   const delivery = record.deliveries.find((item) => item.n === entry.delivery);
   const draft = own(record.drafts, target);
   return <View style={styles.stack}>
     <Copy muted>{entry.state === "skipped" ? "Skipped" : entry.state === "answered" ? "Answered" : "Closed"}</Copy>
     {answer && !answer.skipped && <>
-      <DraftPreview draft={{ ...answer, value: "text" in answer ? answer.text ?? answer.value : undefined }} />
+      <Copy>{submittedPreview(answer)}</Copy>
       {answer.by === "recommended" && <Copy muted>Accepted recommendation</Copy>}
     </>}
     {entry.state === "closed" && draft && Object.keys(draft).length > 1 && <>
       <Copy muted>Unsent draft</Copy><DraftPreview draft={draft} />
     </>}
-    {delivery && <DeliveryMark delivery={delivery} />}
+    {delivery && <Copy muted>{deliveryLabel(delivery, wait)}</Copy>}
   </View>;
 }
 
@@ -164,10 +162,17 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
   refresh: () => Promise<SurfaceRecord | null | undefined>;
 }) {
   const actions = useQuestionActions(hostId, record, refresh);
+  const [ref] = useAgents({ hosts: [hostId], where: (agent) => agent.id === record.agentId });
+  const wait = useAgent(ref ?? record.agentId, (agent): AgentWait => {
+    if (agent.hostId !== hostId) return null;
+    if (agent.attentionReason === "permission") return "permission";
+    return agent.status === "running" ? "turn" : null;
+  });
   const count = sendableTargets(record).length;
   const total = openTargets(record).length;
   const orphaned = !!record.orphanedAt;
   const disabled = actions.locked || orphaned;
+  const sendDisabled = actions.pending || actions.unsaved || orphaned;
   const submitLabel = record.document?.submit?.label ?? "Send";
 
   return <Theme.Provider value={theme.colors}>
@@ -187,33 +192,39 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
                 {state.state === "open" && question ? <>
                   <Copy muted>Open</Copy>
                   <TargetControls question={question} item={item} target={target} actions={actions} disabled={disabled} />
-                </> : <State entry={state} record={record} target={target} />}
+                </> : <State entry={state} record={record} target={target} wait={wait} />}
               </View>;
             })}
           </> : entry.state === "open" && question ? <>
             <Copy muted>Open</Copy>
             <TargetControls question={question} target={id} actions={actions} disabled={disabled} />
-          </> : <State entry={entry} record={record} target={id} />}
+          </> : <State entry={entry} record={record} target={id} wait={wait} />}
         </View>;
       })}
       {orphaned && <Copy muted>Agent stopped</Copy>}
       {!!total && <View style={styles.row}>
-        <Button label={`${submitLabel} (${count} of ${total})`} disabled={!count || actions.pending || orphaned} onPress={() => void actions.submit("send")} />
-        {!!recommendations(record).length && <Button label="Accept recommended" disabled={actions.pending || orphaned} onPress={() => void actions.submit("recommended")} />}
-        {total > count && <Button label="Skip the rest" disabled={actions.pending || orphaned} onPress={() => void actions.submit("skip")} />}
+        <Button label={`${submitLabel} (${count} of ${total})`} disabled={!count || sendDisabled} onPress={() => void actions.submit("send")} />
+        {!!recommendations(record).length && <Button label="Accept recommended" disabled={sendDisabled} onPress={() => void actions.submit("recommended")} />}
+        {total > count && <Button label="Skip the rest" disabled={sendDisabled} onPress={() => void actions.submit("skip")} />}
       </View>}
       {!!record.closed?.reason && !Object.values(record.questions).some((question) => question.closeReason === record.closed?.reason)
         && <BoundedText text={record.closed.reason} />}
-      {record.deliveries.filter(({ state }) => state === "held" || state === "failed" || state === "removed").map((delivery) =>
+      {record.deliveries.filter(({ state }) => state === "held" || state === "failed" || state === "removed" || state === "uncertain").map((delivery) =>
         <View key={delivery.n} style={styles.row}>
           <Copy muted>{`Delivery ${delivery.n} · ${deliveryLabels[delivery.state]}`}</Copy>
-          <Button label="Retry" disabled={actions.pending || orphaned} onPress={() => void actions.retry(delivery.n)} />
+          <Button label="Retry" disabled={sendDisabled} onPress={() => void actions.retry(delivery.n)} />
         </View>)}
       {!!actions.error && <Text accessibilityLiveRegion="polite" style={{ color: theme.colors.statusDanger }}>{actions.error}</Text>}
+      {actions.unsaved && !actions.comparison.length && <Button label="Retry saving drafts"
+        disabled={actions.pending || orphaned} onPress={() => void actions.retryDrafts()} />}
       {actions.comparison.map(({ target, viewed, current }) => <View key={target} style={styles.stack}>
         <Copy bold>{target}</Copy>
         <Copy muted>Your draft</Copy><DraftPreview draft={viewed} />
         <Copy muted>Stored draft</Copy><DraftPreview draft={current} />
+        {actions.unsaved && <View style={styles.row}>
+          <Button label="Keep my draft" disabled={actions.pending || orphaned} onPress={() => actions.resolveDraft(target, true)} />
+          <Button label="Use stored draft" disabled={actions.pending || orphaned} onPress={() => actions.resolveDraft(target, false)} />
+        </View>}
       </View>)}
     </View>
   </Theme.Provider>;

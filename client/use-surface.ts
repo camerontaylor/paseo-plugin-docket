@@ -34,6 +34,23 @@ export function useSurface(hostId: string, surfaceId: string) {
     if (online && source && !removed) void refresh();
   }, [online, source, removed, refresh, revision]);
 
+  useEffect(() => {
+    if (!online || !source || removed || failure !== key) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    function retry(delay: number) {
+      timer = setTimeout(async () => {
+        const result = await refresh();
+        if (!stopped && result === undefined && delay < 4_000) retry(delay * 2);
+      }, delay);
+    }
+    retry(1_000);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [online, source, removed, failure, key, refresh]);
+
   const unavailable = !online || !source || failure === key;
   const record = removed ? null : loaded?.key === key ? loaded.record : undefined;
   return { record, unavailable, refresh };

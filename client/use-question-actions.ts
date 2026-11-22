@@ -3,7 +3,7 @@ import { draftSet, send, deliveryRetry } from "../shared/rpc";
 import { own, type DraftContent, type SurfaceRecord } from "../shared/record";
 import type { Conflict } from "../shared/transitions";
 import { callHost, getHub } from "./hub";
-import { openTargets, recommendations, sendableTargets } from "./question-drafts";
+import { draftWriteInput, openTargets, recommendations, sendableTargets } from "./question-drafts";
 
 interface DraftComparison {
   target: string;
@@ -26,6 +26,7 @@ export function useQuestionActions(
   const [error, setError] = useState<string>();
   const [comparison, setComparison] = useState<DraftComparison[]>([]);
   const [pending, setPending] = useState(false);
+  const [unsaved, setUnsaved] = useState(false);
   const [overlay, setOverlay] = useState<ReadonlyMap<string, Edit>>(new Map());
   const edits = useRef(new Map<string, Edit>());
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -34,9 +35,7 @@ export function useQuestionActions(
   const acknowledged = useRef(new Map<string, number>());
 
   async function write(target: string, edit: Edit) {
-    const reply = await callHost(hub, hostId, draftSet, {
-      surfaceId, target, draft: edit.content, baseVersion: edit.version,
-    });
+    const reply = await callHost(hub, hostId, draftSet, draftWriteInput(surfaceId, target, edit.version, edit.content));
     if ("version" in reply) return reply.version;
     if ("conflict" in reply) {
       setComparison([{ target, viewed: edits.current.has(target) ? edits.current.get(target)!.content : edit.content, current: reply.conflict }]);
@@ -46,9 +45,12 @@ export function useQuestionActions(
   }
 
   async function flush() {
-    if (running.current) return;
+    if (running.current || !edits.current.size) return;
+    clearTimeout(timer.current);
     running.current = true;
+    setPending(true);
     setError(undefined);
+    setComparison([]);
     try {
       do {
         while (edits.current.size) {
@@ -63,19 +65,19 @@ export function useQuestionActions(
       } while (edits.current.size);
     } catch (cause) {
       setError(String(cause instanceof Error ? cause.message : cause));
-      edits.current.clear();
       await refresh();
     } finally {
       running.current = false;
       acknowledged.current.clear();
-      setOverlay(new Map());
+      setOverlay(new Map(edits.current));
+      setUnsaved(edits.current.size > 0);
       setPending(false);
     }
   }
 
-  function save(target: string, content: DraftContent | null, defer = false) {
+  function save(target: string, content: DraftContent | null, defer = false, baseVersion?: number) {
     if (submitting.current) return;
-    const version = edits.current.get(target)?.version ?? acknowledged.current.get(target) ?? own(record.drafts, target)?.version ?? 0;
+    const version = baseVersion ?? edits.current.get(target)?.version ?? acknowledged.current.get(target) ?? own(record.drafts, target)?.version ?? 0;
     const edit = { content, version };
     edits.current.set(target, edit);
     setOverlay((prior) => new Map(prior).set(target, edit));
@@ -135,7 +137,30 @@ export function useQuestionActions(
   }
 
   return {
-    error, comparison, pending, save, submit, retry,
+    error, comparison, pending, unsaved, save, submit, retry,
+    retryDrafts: flush,
+    resolveDraft(target: string, keepMine: boolean) {
+      if (running.current) return;
+      const edit = edits.current.get(target);
+      if (!edit) return;
+      if (keepMine) {
+        const compared = comparison.find((entry) => entry.target === target)?.current;
+        const stored = own(record.drafts, target);
+        // A cleared draft is returned as null, so its version comes from the refreshed record.
+        const version = compared?.version ?? stored?.version ?? 0;
+        if (!compared && stored && Object.keys(stored).length > 1) {
+          setComparison([{ target, viewed: edit.content, current: stored }]);
+          return;
+        }
+        save(target, edit.content, false, version);
+      } else {
+        edits.current.delete(target);
+        setOverlay(new Map(edits.current));
+        setUnsaved(edits.current.size > 0);
+        setComparison([]);
+        setError(undefined);
+      }
+    },
     locked: pending && overlay.size === 0,
     draft(target: string) {
       const edit = overlay.get(target);

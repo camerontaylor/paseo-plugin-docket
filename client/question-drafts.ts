@@ -1,6 +1,6 @@
 import type { Question } from "../shared/document";
 import { itemAddress } from "../shared/ids";
-import { own, type DraftContent, type SurfaceRecord } from "../shared/record";
+import { own, type AnswerRecord, type ItemAnswerRecord, type Draft, type DraftContent, type SurfaceRecord } from "../shared/record";
 import { draftIncomplete } from "../shared/transitions";
 
 interface OpenTarget {
@@ -41,4 +41,31 @@ export function recommendations(record: SurfaceRecord) {
       : { value, note: draft?.note, by: "recommended" };
     return [{ target, content }];
   });
+}
+
+/** Keep store metadata out of the strict draft.set payload. */
+export function draftWriteInput(surfaceId: string, target: string, baseVersion: number, content: (DraftContent & Partial<Pick<Draft, "version">>) | null) {
+  if (content === null) return { surfaceId, target, baseVersion, draft: null };
+  const { version: _storedVersion, ...draft } = content;
+  return { surfaceId, target, baseVersion, draft };
+}
+
+export function draftPreview(draft?: DraftContent | { text: string } | null): string {
+  if (draft && "text" in draft) return draft.text;
+  if (draft?.skipped) return "Skipped";
+  return [
+    Array.isArray(draft?.value) ? draft.value.join(", ") : draft?.value,
+    draft?.verdict,
+    draft?.other && `Other: ${draft.other}`,
+    draft?.note && `Note: ${draft.note}`,
+    draft?.comment && `Comment: ${draft.comment}`,
+  ].filter(Boolean).join("\n") || "Empty";
+}
+
+export function submittedPreview(answer: AnswerRecord | ItemAnswerRecord): string {
+  if ("text" in answer) {
+    const { text, ...content } = answer;
+    return draftPreview({ ...content, value: text ?? content.value });
+  }
+  return draftPreview(answer);
 }

@@ -1,4 +1,4 @@
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { PluginClientContext, PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import { z } from "zod";
 import { isSurfaceId } from "../shared/ids";
@@ -19,17 +19,21 @@ function SurfaceCard({ host, item, theme, agentId }: PluginTimelineItemProps<z.o
   const visible = record?.agentId === agentId ? record : undefined;
 
   return <View style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface1 }]}>
-    {unavailable || !visible ? <>
+    {(unavailable || !visible) && <>
       <Text style={{ color: colors.foregroundMuted }}>
         {unavailable ? "Docket server unavailable" : record === undefined ? "Loading questions…" : "Surface unavailable"}
       </Text>
       {!!fallback && <Text selectable style={{ color: colors.foreground }}>{fallback}</Text>}
-    </> : <>
+      {unavailable && <Pressable accessibilityRole="button" onPress={() => void refresh()}>
+        <Text style={{ color: colors.accent }}>Refresh questions</Text>
+      </Pressable>}
+    </>}
+    {visible && <View style={unavailable ? { display: "none" } : { gap: 8 }}>
       <Text style={[styles.title, { color: colors.foreground }]}>{visible.summary}</Text>
       {!!visible.context && <Text style={{ color: colors.foregroundMuted }}>{visible.context}</Text>}
       {visible.meanwhile === "other_work" && <Text style={{ color: colors.foregroundMuted }}>The agent can continue work that does not depend on these answers.</Text>}
       <SurfaceQuestions key={JSON.stringify([host.id, surfaceId])} hostId={host.id} record={visible} theme={theme} refresh={refresh} />
-    </>}
+    </View>}
   </View>;
 }
 
