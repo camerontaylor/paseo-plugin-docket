@@ -197,16 +197,20 @@ function InboxQueue({ theme, navigation, controls, inbox }: PluginScreenProps & 
     <TextInput accessibilityLabel="Filter by agent label" placeholder="Filter by agent label"
       placeholderTextColor={theme.colors.foregroundMuted} value={label} onChangeText={setLabel}
       style={{ color: theme.colors.foreground, padding: 8, borderWidth: 1, borderColor: theme.colors.border }} />
-    {[...groups].filter(([, cards]) => cards.length > 0).map(([section, cards]) => <View key={section} style={{ gap: 8 }}>
-      <Text accessibilityRole="header" style={{ color: theme.colors.foreground, fontWeight: "600" }}>{section}</Text>
-      {cards.map((card) => {
-        const { hostId, summary } = card;
-        return <Card key={entityKey(hostId, summary.id)} card={card} source={sources.get(hostId)} now={now}
-          agentRef={agentRefs.get(entityKey(hostId, summary.agentId))}
-          workspaceRef={summary.workspaceId ? workspaceRefs.get(entityKey(hostId, summary.workspaceId)) : undefined}
-          theme={theme} controls={controls} openChat={navigation && (() => navigation.openAgent({ serverId: hostId, agentId: summary.agentId }))} />;
-      })}
-    </View>)}
+    {/* Keep each card under the same parent when its delivery changes sections. */}
+    <View style={{ gap: 8 }}>
+      {[...groups].flatMap(([section, cards]) => cards.length ? [
+        <Text key={section} accessibilityRole="header"
+          style={{ color: theme.colors.foreground, fontWeight: "600" }}>{section}</Text>,
+        ...cards.map((card) => {
+          const { hostId, summary } = card;
+          return <Card key={entityKey(hostId, summary.id)} card={card} source={sources.get(hostId)} now={now}
+            agentRef={agentRefs.get(entityKey(hostId, summary.agentId))}
+            workspaceRef={summary.workspaceId ? workspaceRefs.get(entityKey(hostId, summary.workspaceId)) : undefined}
+            theme={theme} controls={controls} openChat={navigation && (() => navigation.openAgent({ serverId: hostId, agentId: summary.agentId }))} />;
+        }),
+      ] : [])}
+    </View>
     {[...groups.values()].every((cards) => cards.length === 0) && <Text style={{ color: theme.colors.foregroundMuted }}>
       {hostFilter || workspaceFilter || needle ? "No cards match these filters."
         : inbox.count.kind === "exact" ? "Nothing waiting in Docket." : "No cards available yet."}
