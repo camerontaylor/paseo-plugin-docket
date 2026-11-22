@@ -13,6 +13,7 @@ const screenId = "inbox";
 const title = "Docket Inbox";
 type Inbox = ReturnType<typeof useDocketInbox>;
 type Theme = PluginHostProps["theme"];
+type SurfaceTarget = { hostId: string; surfaceId: string };
 type AnswerControls = {
   useSurface(hostId: string, surfaceId: string): {
     record: SurfaceRecord | null | undefined;
@@ -25,6 +26,10 @@ type AnswerControls = {
     record: SurfaceRecord;
     refresh(): Promise<SurfaceRecord | null | undefined>;
   }>;
+};
+
+type InboxDependencies = AnswerControls & {
+  Decisions: ComponentType<{ theme: Theme; openSurface(target: SurfaceTarget): void }>;
 };
 
 type HostState = Inbox["sources"][number]["docketStatus"];
@@ -60,18 +65,31 @@ function WorkspaceFilter({ id, workspaceRef, active, choose, theme }: {
   return <InboxButton label={workspaceName(workspace, id)} selected={active} theme={theme} onPress={choose} />;
 }
 
-function ExpandedCard({ hostId, surfaceId, theme, controls }: {
+function ExpandedCard({ hostId, surfaceId, theme, controls, fromHistory = false }: {
   hostId: string;
   surfaceId: string;
   theme: Theme;
   controls: AnswerControls;
+  fromHistory?: boolean;
 }) {
   const { record, unavailable, refresh } = controls.useSurface(hostId, surfaceId);
-  if (unavailable) return <InboxButton theme={theme} label="Reload questions" onPress={() => void refresh()} />;
+  if (unavailable) return <View style={{ gap: 8 }}>
+    <Text accessibilityRole="alert" style={{ color: theme.colors.statusWarning }}>The owning Docket host is unavailable.</Text>
+    <InboxButton theme={theme} label="Reload surface" onPress={() => void refresh()} />
+  </View>;
   if (!record) return <Text style={{ color: theme.colors.foregroundMuted }}>
     {record === null ? "This surface is no longer available." : "Loading questions…"}
   </Text>;
-  return <controls.SurfaceQuestions hostId={hostId} theme={theme} record={record} refresh={refresh} />;
+  return <View style={{ gap: 8 }}>
+    {fromHistory && <>
+      <Text accessibilityRole="header" style={{ color: theme.colors.foreground, fontWeight: "600" }}>{record.summary}</Text>
+      {record.context && <Text style={{ color: theme.colors.foreground }}>{record.context}</Text>}
+      {record.compactedAt !== null && <Text style={{ color: theme.colors.foregroundMuted }}>
+        The original view was compacted. Saved answers are shown below.
+      </Text>}
+    </>}
+    <controls.SurfaceQuestions hostId={hostId} theme={theme} record={record} refresh={refresh} />
+  </View>;
 }
 
 function Card({ card, source, openChat, agentRef, workspaceRef, theme, now, controls }: {
@@ -120,7 +138,7 @@ function Card({ card, source, openChat, agentRef, workspaceRef, theme, now, cont
   </View>;
 }
 
-function DocketInbox({ theme, navigation, controls }: PluginScreenProps & { controls: AnswerControls }) {
+function InboxQueue({ theme, navigation, controls }: PluginScreenProps & { controls: AnswerControls }) {
   const inbox = useDocketInbox();
   const [hostFilter, setHostFilter] = useState<string>();
   const [workspaceFilter, setWorkspaceFilter] = useState<string>();
@@ -183,6 +201,30 @@ function DocketInbox({ theme, navigation, controls }: PluginScreenProps & { cont
   </ScrollView>;
 }
 
+function DocketInbox({ controls, ...props }: PluginScreenProps & { controls: InboxDependencies }) {
+  const { theme } = props;
+  const [tab, setTab] = useState<"inbox" | "decisions">("inbox");
+  const [target, setTarget] = useState<SurfaceTarget>();
+  return <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
+    <View style={[buttonRow, { padding: 12 }]}>
+      <InboxButton theme={theme} label="Inbox" selected={tab === "inbox"} onPress={() => setTab("inbox")} />
+      <InboxButton theme={theme} label="Decisions" selected={tab === "decisions"} onPress={() => setTab("decisions")} />
+    </View>
+    {tab === "inbox" ? <InboxQueue {...props} controls={controls} /> : <>
+      <View style={{ flex: 1, display: target ? "none" : "flex" }}>
+        <controls.Decisions theme={theme} openSurface={setTarget} />
+      </View>
+      {target && <ScrollView contentContainerStyle={{ padding: 16, gap: 12 }}>
+        <View style={buttonRow}>
+          <InboxButton theme={theme} label="Back to Decisions" onPress={() => setTarget(undefined)} />
+        </View>
+        <ExpandedCard key={entityKey(target.hostId, target.surfaceId)}
+          {...target} theme={theme} controls={controls} fromHistory />
+      </ScrollView>}
+    </>}
+  </View>;
+}
+
 function SidebarInbox({ theme, openScreen, currentScreen }: PluginSidebarItemProps) {
   const { count } = useDocketInbox();
   return <ui.SidebarRow icon="Inbox" label={title} active={currentScreen?.screenId === screenId}
@@ -207,7 +249,7 @@ function WorkspaceInboxBadge({ host, workspaceId }: WorkspaceBadgeProps) {
   return <WorkspaceRowBadge icon="Inbox" label={label} accessibilityLabel={`Docket open · ${label}`} />;
 }
 
-export function registerInbox(client: PluginClientContext, controls: AnswerControls) {
+export function registerInbox(client: PluginClientContext, controls: InboxDependencies) {
   const removeScreen = client.addScreen({
     id: screenId, title, Component: (props) => <DocketInbox {...props} controls={controls} />,
   });
