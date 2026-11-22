@@ -173,7 +173,7 @@ export function decisionText(d: Decision): string {
 }
 
 /** Newest first. */
-export function searchDecisions(all: Decision[], query: DecisionQuery = {}): Decision[] {
+export function searchDecisions<T extends Decision>(all: readonly T[], query: DecisionQuery = {}): T[] {
   const words = (query.text ?? "").toLowerCase().split(/\s+/).filter(Boolean);
   const since = query.since === undefined ? -Infinity : Date.parse(query.since);
   const until = query.until === undefined ? Infinity : Date.parse(query.until);

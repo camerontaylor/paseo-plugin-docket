@@ -12,7 +12,8 @@ it("projects store revisions and routes validated reads, edits and sends to the 
   const root = await mkdtemp(path.join(tmpdir(), "docket-rpc-"));
   const controller = new AbortController();
   try {
-    const store = await openStore({ root });
+    let clock = Date.now();
+    const store = await openStore({ root, now: () => new Date(clock) });
     const created = await store.create({
       agentId: "agent",
       document: {
@@ -40,6 +41,7 @@ it("projects store revisions and routes validated reads, edits and sends to the 
     }
 
     const events: SurfaceEvent[] = [];
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const closed = vi.fn();
     const stream = Promise.resolve(handlers.get(surfaces.name)!({}, {
       paseo, signal: controller.signal,
@@ -70,19 +72,41 @@ it("projects store revisions and routes validated reads, edits and sends to the 
     expect(await call(deliveryRetry, { surfaceId, n: 1 })).toEqual({});
     expect(retry).toHaveBeenCalledWith(surfaceId, 1);
     expect(await call(decisionsSearch, { query: "Yes", agentId: "agent", limit: 1 })).toMatchObject([{ surfaceId, questionId: "answer" }]);
+    expect(await call(decisionsDelete, { surfaceId, questionId: "answer" })).toMatchObject({ refusal: { code: "delivery-pending" } });
+    expect(await call(decisionsDelete, { agentId: "agent" })).toMatchObject({ refusal: { code: "delivery-pending" } });
+    const settled = await store.apply(surfaceId, { kind: "updateDelivery", n: 1, to: "delivered", now: new Date().toISOString() });
+    if (!settled.ok || !settled.record.resolvedAt) throw new Error("Expected a resolved surface");
+    const rev = settled.record.rev;
+    clock = Date.parse(settled.record.resolvedAt) + 7 * 24 * 60 * 60 * 1000 + 1;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(events.at(-1)).toEqual({ kind: "change", hostId: "host-a", surfaceId, rev, summary: null });
+    expect(store.get(surfaceId)).toBeDefined();
+
+    expect(await call(decisionsDelete, { surfaceId, questionId: "answer" })).toEqual({});
+    expect(await call(decisionsSearch, {})).toEqual([]);
+
+    const standalone = await store.create({ agentId: "another-agent", document: created.record.document! });
+    if (!standalone.ok) throw Error(standalone.refusal.message);
+    const removableId = standalone.record.id;
+    expect(await call(draftSet, { ...draft, surfaceId: removableId })).toEqual({ version: 1 });
+    expect(await call(send, { surfaceId: removableId, targets: [{ target: "answer", version: 1 }] }))
+      .toMatchObject({ delivery: { n: 1 } });
+    expect((await store.apply(removableId, { kind: "updateDelivery", n: 1, to: "delivered", now: new Date().toISOString() })).ok).toBe(true);
+    expect(await call(decisionsDelete, { surfaceId: removableId, questionId: "answer" })).toEqual({});
+    expect(events.at(-1)).toMatchObject({
+      kind: "change", hostId: "host-a", surfaceId: removableId, removed: true, summary: null,
+    });
+    expect(store.get(removableId)).toBeUndefined();
+
     controller.abort();
     await stream;
     expect(closed).toHaveBeenCalledOnce();
     const before = events.length;
-    expect(await call(decisionsDelete, { surfaceId, questionId: "answer" })).toMatchObject({ refusal: { code: "delivery-pending" } });
-    expect(await call(decisionsDelete, { agentId: "agent" })).toMatchObject({ refusal: { code: "delivery-pending" } });
-    const settled = await store.apply(surfaceId, { kind: "updateDelivery", n: 1, to: "delivered", now: new Date().toISOString() });
-    expect(settled.ok).toBe(true);
-    expect(await call(decisionsDelete, { surfaceId, questionId: "answer" })).toEqual({});
-    expect(await call(decisionsSearch, {})).toEqual([]);
+    await store.create({ agentId: "after-abort", document: created.record.document! });
     expect(events).toHaveLength(before);
   } finally {
     controller.abort();
+    vi.useRealTimers();
     await rm(root, { recursive: true, force: true });
   }
 });

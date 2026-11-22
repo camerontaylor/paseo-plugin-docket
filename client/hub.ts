@@ -93,12 +93,18 @@ export async function searchHostDecisions(hub: Hub, hostIds: readonly string[], 
   return { decisions: searchDecisions(decisions, { limit: query.limit }), unavailable };
 }
 
-export function inboxOf(snapshot: ReturnType<Hub["getSnapshot"]>, hosts: readonly PluginHostSummary[]) {
+export function inboxOf(
+  snapshot: ReturnType<Hub["getSnapshot"]>,
+  hosts: readonly PluginHostSummary[],
+  confirmedMissing?: ReadonlySet<string>,
+) {
   const sources = hosts.map((host) => {
     const entry = snapshot.get(host.serverId);
-    const status: "disconnected" | "missing" | "ready" | "stale" = host.status !== "online" ? "disconnected"
-      : !entry?.source ? "missing"
-      : entry.fresh ? "ready" : "stale";
+    // The SDK reports host connectivity. Absence from the hub alone cannot establish absence of the plugin.
+    const status = host.status !== "online" ? "disconnected"
+      : entry?.source ? (entry.fresh ? "ready" : "stale")
+      : confirmedMissing?.has(host.serverId) ? "missing"
+      : entry ? "stale" : "pending";
     return { ...host, docketStatus: status, summaries: entry?.summaries, updatedAt: entry?.updatedAt };
   });
   const cards = sources.flatMap((host) => [...(host.summaries?.values() ?? [])].map((summary) => ({
@@ -109,7 +115,7 @@ export function inboxOf(snapshot: ReturnType<Hub["getSnapshot"]>, hosts: readonl
   const ready = sources.filter((host) => host.docketStatus === "ready");
   const open = ready.reduce((count, host) => count + [...(host.summaries?.values() ?? [])]
     .filter((summary) => summary.status === "open").length, 0);
-  const incomplete = sources.some((host) => host.docketStatus !== "ready" && (host.docketStatus !== "missing" || host.updatedAt !== undefined));
+  const incomplete = sources.some((host) => host.docketStatus !== "ready" && host.docketStatus !== "missing");
   const count = incomplete
     ? ready.length ? { kind: "lower-bound" as const, value: open } : { kind: "unknown" as const }
     : { kind: "exact" as const, value: open };

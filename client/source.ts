@@ -5,6 +5,7 @@ import { getHub, type Hub } from "./hub";
 const MIN_DELAY = 1_000;
 const MAX_DELAY = 60_000;
 const SNAPSHOT_TIMEOUT = 10_000;
+const POLL_TIMEOUT = 10_000;
 
 export function startSource(client: Pick<PluginClientContext, "rpc" | "subscribe">, hub: Hub = getHub()) {
   const source = { rpc: client.rpc.bind(client) };
@@ -12,6 +13,9 @@ export function startSource(client: Pick<PluginClientContext, "rpc" | "subscribe
   let stopped = false;
   let delay = MIN_DELAY;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let pollInFlight = false;
+  let streamSnapshots = 0;
+  let pollDeadline: ReturnType<typeof setTimeout> | undefined;
   let closeStream: (() => void) | undefined;
 
   function update(event: SurfaceEvent) {
@@ -25,18 +29,40 @@ export function startSource(client: Pick<PluginClientContext, "rpc" | "subscribe
   }
 
   async function poll() {
+    // The SDK cannot cancel an RPC. Keep one in flight while stream retries continue.
+    if (pollInFlight) {
+      openStream();
+      return;
+    }
+
+    pollInFlight = true;
+    const snapshotsAtStart = streamSnapshots;
+    let expired = false;
+    function unavailable() {
+      if (hostId) hub.unavailable(hostId, source);
+    }
+
+    pollDeadline = setTimeout(() => {
+      expired = true;
+      unavailable();
+      openStream();
+    }, POLL_TIMEOUT);
     try {
       const { hostId: id, result } = await source.rpc(surfacesList, {});
-      if (!update({ kind: "snapshot", hostId: id, summaries: result }) && !stopped && hostId) {
-        hub.unavailable(hostId, source);
+      if (!stopped && streamSnapshots === snapshotsAtStart && !update({ kind: "snapshot", hostId: id, summaries: result })) {
+        unavailable();
       }
     } catch {
-      if (!stopped && hostId) hub.unavailable(hostId, source);
+      if (!stopped && !expired) unavailable();
+    } finally {
+      pollInFlight = false;
+      clearTimeout(pollDeadline);
+      if (!stopped && !expired) openStream();
     }
-    if (!stopped) openStream();
   }
 
   function openStream() {
+    if (stopped) return;
     let handle: ReturnType<PluginClientContext["subscribe"]> | undefined;
     let closed = false;
     let receivedSnapshot = false;
@@ -58,6 +84,7 @@ export function startSource(client: Pick<PluginClientContext, "rpc" | "subscribe
         if (!update(event)) return close();
         if (event.kind === "snapshot") {
           receivedSnapshot = true;
+          streamSnapshots += 1;
           clearTimeout(deadline);
           delay = MIN_DELAY;
         }
@@ -73,6 +100,7 @@ export function startSource(client: Pick<PluginClientContext, "rpc" | "subscribe
   return () => {
     stopped = true;
     clearTimeout(timer);
+    clearTimeout(pollDeadline);
     closeStream?.();
     if (hostId) hub.unavailable(hostId, source, true);
   };
