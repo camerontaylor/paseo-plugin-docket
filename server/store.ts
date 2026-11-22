@@ -29,6 +29,7 @@ import {
   newSurfaceId,
   searchDecisions,
   summaryOf,
+  surfaceStatus,
 } from "../shared";
 
 /** `$PASEO_HOME/plugin-data/docket`, with `~/.paseo` when `PASEO_HOME` is unset (plan D8). */
@@ -94,6 +95,7 @@ export interface Store {
   list(filter?: { agentId?: string; workspaceId?: string }): SurfaceRecord[];
   apply(id: string, command: Command): Promise<StoreResult>;
   /** Open surfaces and those resolved in the last seven days. */
+  summary(id: string): Summary | undefined;
   summaries(filter?: { agentId?: string; workspaceId?: string }): Summary[];
   decisions(query?: DecisionQuery): Decision[];
   deleteDecision(surfaceId: string, questionId: string): Promise<StoreResult>;
@@ -361,11 +363,16 @@ export async function openStore(options: StoreOptions = {}): Promise<Store> {
       .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : 1));
   }
 
+  function isListed(record: SurfaceRecord, cutoff: number): boolean {
+    return surfaceStatus(record) !== "resolved" ||
+      (record.resolvedAt !== null && Date.parse(record.resolvedAt) >= cutoff);
+  }
+
   function summaries(filter: { agentId?: string; workspaceId?: string } = {}): Summary[] {
     const cutoff = now().getTime() - 7 * DAY_MS;
     return listRecords(filter)
-      .map(summaryOf)
-      .filter((s) => s.status !== "resolved" || (s.resolvedAt !== null && Date.parse(s.resolvedAt) >= cutoff));
+      .filter((record) => isListed(record, cutoff))
+      .map(summaryOf);
   }
 
   function decisions(query: DecisionQuery = {}): Decision[] {
@@ -422,6 +429,10 @@ export async function openStore(options: StoreOptions = {}): Promise<Store> {
     get: (id) => records.get(id),
     list: listRecords,
     apply,
+    summary(id) {
+      const record = records.get(id);
+      if (record && isListed(record, now().getTime() - 7 * DAY_MS)) return summaryOf(record);
+    },
     summaries,
     decisions,
     deleteDecision,

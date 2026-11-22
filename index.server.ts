@@ -7,6 +7,7 @@ import { z } from "zod";
 import { startDelivery } from "./server/delivery";
 import type { PaseoApi } from "./server/delivery-host";
 import { openStore } from "./server/store";
+import { registerRpc } from "./server/rpc";
 import { noopTool } from "./server/noop-tool";
 
 export default function contribute(server: PluginServerContext) {
@@ -27,12 +28,17 @@ export default function contribute(server: PluginServerContext) {
     version: 1,
     schema: z.object({ transport: z.enum(["auto", "direct"]).default("auto") }),
   }));
+  let store: ReturnType<typeof openStore> | undefined;
+  const getStore = () => store ??= openStore().catch((error: unknown) => {
+    store = undefined;
+    throw error;
+  });
   let delivery: Promise<ReturnType<typeof startDelivery>> | undefined;
 
   // The SDK supplies the host API in handler contexts. Start recovery as soon
   // as one is available, without blocking the session-open hook on host RPCs.
   function connect(paseo: PaseoApi) {
-    return delivery ??= Promise.all([openStore(), settings.read()])
+    return delivery ??= Promise.all([getStore(), settings.read()])
       .then(([store, config]) => startDelivery(store, paseo, {
         forceDirect: config.status === "ready" && config.values.transport === "direct",
       }))
@@ -41,6 +47,8 @@ export default function contribute(server: PluginServerContext) {
         throw error;
       });
   }
+
+  registerRpc(server, getStore, connect);
 
   const stopHooks = [
     server.before("agent.session_open", ({ request }, { paseo }) => {

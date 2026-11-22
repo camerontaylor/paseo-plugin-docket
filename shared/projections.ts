@@ -1,6 +1,7 @@
 // Read-only views of records (spec 11, 26): the summary a list shows and the
 // decisions the user can search and delete. Pure; the store feeds them records.
 
+import type { Meanwhile, Question } from "./document";
 import {
   type AnswerRecord,
   type DeliveryState,
@@ -26,6 +27,14 @@ export interface Summary {
   replacedBy: string | null;
   revises: string | null;
   compacted: boolean;
+  context?: string | null;
+  meanwhile?: Meanwhile;
+  snooze?: string | null;
+  questions?: (Pick<QuestionRecord, "kind" | "label" | "state"> & {
+    id: string;
+    recommend?: Question["recommend"];
+  })[];
+  deliveries?: { n: number; state: DeliveryState }[];
 }
 
 export function summaryOf(record: SurfaceRecord): Summary {
@@ -44,6 +53,15 @@ export function summaryOf(record: SurfaceRecord): Summary {
     replacedBy: record.replacedBy,
     revises: record.revises,
     compacted: record.compactedAt !== null,
+    context: record.context,
+    meanwhile: record.meanwhile,
+    snooze: record.snooze,
+    questions: ids.map((id) => {
+      const { kind, label, state } = record.questions[id];
+      const recommend = record.document?.questions?.find((q) => q.id === id)?.recommend;
+      return { id, kind, label, state, ...(recommend === undefined ? {} : { recommend }) };
+    }),
+    deliveries: record.deliveries.map(({ n, state }) => ({ n, state })),
   };
 }
 

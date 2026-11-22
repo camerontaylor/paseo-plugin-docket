@@ -1,6 +1,6 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
+import { startSource } from "./client/source";
 
-// Nothing is contributed yet.
-export default function contribute(_client: PluginClientContext) {
-  return () => {};
+export default function contribute(client: PluginClientContext) {
+  return startSource(client);
 }
