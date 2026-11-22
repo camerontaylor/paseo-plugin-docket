@@ -1,14 +1,14 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { AgentToolContext, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
+import type { AgentToolContext, PluginServerContext, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import fixture from "../shared/fixtures/spec-20-1-questions-only.json";
 import { LIMITS, TOOL_SCHEMA_MAX_BYTES } from "../shared/limits";
 import { SHOW_INPUT_SCHEMA } from "../shared/tool-schema";
 import { openStore, type Store } from "./store";
-import { attachDocketTools, createDocketTools, isDocketPermission } from "./tools";
+import { attachDocketTools, createDocketTools, isDocketPermission, registerToolSettings } from "./tools";
 
 const settings = {
   agentTools: true,
@@ -56,12 +56,53 @@ async function show(input: object | string, agentId = "agent"): Promise<string> 
   return surface;
 }
 
+function sessionRequest(): PluginSessionOpenRequest {
+  return {
+    agentId: "agent", workspaceId: null, provider: "codex", cwd: dir, title: null, background: false,
+    reason: "create", purpose: "interactive", tools: [], labels: {}, metadata: {}, env: { EXISTING: "yes" }, mcpServers: {},
+  };
+}
+
+describe("Docket host settings and attachment failures", () => {
+  it("keeps first-install defaults and disables auto-approval for invalid or unreadable settings", async () => {
+    const server = {
+      registerSettings: ({ schema }: { schema: z.ZodType }) => ({
+        read: vi.fn()
+          .mockResolvedValueOnce({ status: "ready", revision: "missing", values: schema.parse({}) })
+          .mockResolvedValueOnce({ status: "invalid", revision: "broken", error: "invalid settings" })
+          .mockRejectedValueOnce(new Error("read failed")),
+      }),
+    } as unknown as PluginServerContext;
+    const readHostSettings = registerToolSettings(server);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      expect(await readHostSettings()).toEqual(settings);
+      expect(await readHostSettings()).toMatchObject({ agentTools: true, allowToolPermissions: false });
+      expect(await readHostSettings()).toMatchObject({ agentTools: false, allowToolPermissions: false });
+      expect(warn).toHaveBeenCalledWith("[docket] could not read host settings");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("preserves the original session request when agent storage cannot be created", async () => {
+    const request = sessionRequest();
+    const storageParent = path.join(store.root, "agents");
+    await mkdir(storageParent);
+    await writeFile(path.join(storageParent, request.agentId), "blocks directory creation");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      expect(await attachDocketTools(request, readSettings, async () => store)).toBe(request);
+      expect(warn).toHaveBeenCalledWith("[docket] could not prepare agent tools");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 describe("Docket tools", () => {
   it("advertises the loose D7 wire schema and attaches tools and private storage on session open", async () => {
-    const request: PluginSessionOpenRequest = {
-      agentId: "agent", workspaceId: null, provider: "codex", cwd: dir, title: null, background: false,
-      reason: "create", purpose: "interactive", tools: [], labels: {}, metadata: {}, env: { EXISTING: "yes" }, mcpServers: {},
-    };
+    const request = sessionRequest();
     const attached = await attachDocketTools(request, readSettings, async () => store);
     expect(attached.tools.map((tool) => tool.name)).toEqual(["docket_show", "docket_close", "docket_get"]);
     expect(attached.tools[0].description).toContain("Use the harness's question tool");

@@ -30,8 +30,13 @@ export function registerToolSettings(server: PluginServerContext) {
     schema: settingsSchema,
   }));
   return async () => {
-    const state = await settings.read();
-    return state.status === "ready" ? state.values : settingsSchema.parse({});
+    try {
+      const state = await settings.read();
+      return state.status === "ready" ? state.values : settingsSchema.parse({ allowToolPermissions: false });
+    } catch {
+      console.warn("[docket] could not read host settings");
+      return settingsSchema.parse({ agentTools: false, allowToolPermissions: false });
+    }
   };
 }
 
@@ -49,14 +54,20 @@ export async function attachDocketTools(
   readSettings: ReadSettings,
   getStore: () => Promise<Store>,
 ): Promise<PluginSessionOpenRequest> {
-  if (!(await readSettings()).agentTools || request.purpose === "history") return request;
-  const storage = agentStorage(request.agentId);
-  await mkdir(storage, { recursive: true, mode: 0o700 });
-  return {
-    ...request,
-    env: { ...request.env, DOCKET_STORAGE: storage },
-    tools: [...request.tools, ...createDocketTools(getStore, readSettings)],
-  };
+  if (request.purpose === "history") return request;
+  try {
+    if (!(await readSettings()).agentTools) return request;
+    const storage = agentStorage(request.agentId);
+    await mkdir(storage, { recursive: true, mode: 0o700 });
+    return {
+      ...request,
+      env: { ...request.env, DOCKET_STORAGE: storage },
+      tools: [...request.tools, ...createDocketTools(getStore, readSettings)],
+    };
+  } catch {
+    console.warn("[docket] could not prepare agent tools");
+    return request;
+  }
 }
 
 function agentStorage(agentId: string): string {
