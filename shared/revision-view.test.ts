@@ -85,3 +85,69 @@ it("uses question scope for standalone items and keeps legacy compacted answers 
   expect(compacted.incomplete).toBe(true);
   expect(compacted.removed).toMatchObject([{ title: "Standalone", earlier: { feedback: [{ answer: { verdict: "approve" } }] } }]);
 });
+
+it("follows paths, renames, and hunk headers when positional IDs move", () => {
+  const document: SurfaceDocument = { v: 1, summary: "Diff", view: { t: "changes", id: "diff" } };
+  const earlier = make(document);
+  earlier.comments["diff.f1"] = { version: 1, text: "Keep for a", delivery: null };
+  earlier.comments["diff.f2h1"] = { version: 1, text: "Keep for b's hunk", delivery: null };
+  const current = make({ ...document, revises: earlier.id }, earlier);
+  const files = (...rows: [string, string, string?][]) => new Map([["diff", JSON.stringify({
+    files: rows.map(([id, path, oldPath]) => ({
+      id, path, oldPath, status: oldPath ? "renamed" : "changed", added: 1, removed: 0,
+      patch: "@@ same\n+content", hunks: [{ id: `${id}h1`, header: "@@ same" }],
+    })),
+    notes: [],
+  })]]);
+  const before = files(["f1", "a.ts"], ["f2", "b.ts"], ["f3", "d.ts"]);
+  const after = files(["f1", "b.ts"], ["f2", "c.ts"], ["f3", "e.ts", "d.ts"]);
+  const result = revisionView(current, earlier, after, before)!;
+  expect(result.current.get("diff.f1")?.mark).toBe("Unchanged");
+  expect(result.current.get("diff.f1")?.earlier?.draftComment).toBeUndefined();
+  expect(result.current.get("diff.f1h1")?.earlier?.draftComment).toBe("Keep for b's hunk");
+  expect(result.current.get("diff.f2")?.mark).toBe("New");
+  expect(result.current.get("diff.f3")).toMatchObject({ mark: "Changed", earlier: { title: "d.ts" } });
+  expect(result.removed).toMatchObject([
+    { title: "a.ts", mark: "Removed", earlier: { draftComment: "Keep for a" } },
+    { title: "a.ts @@ same", mark: "Removed" },
+  ]);
+});
+
+it("keeps one-sided rename evidence uncertain in either direction", () => {
+  const document: SurfaceDocument = { v: 1, summary: "Diff", view: { t: "changes", id: "diff" } };
+  const extra = { changeItems: { diff: [{ id: "f1", title: "new.ts" }] } };
+  const earlier = make(document, undefined, extra);
+  const current = make({ ...document, revises: earlier.id }, earlier, extra);
+  const evidence = new Map([["diff", JSON.stringify({
+    files: [{ id: "f1", path: "new.ts", oldPath: "old.ts", status: "renamed", added: 0, removed: 0, patch: "rename" }],
+    notes: [],
+  })]]);
+  for (const [left, right] of [[empty, evidence], [evidence, empty]]) {
+    const result = revisionView(current, earlier, left, right)!;
+    expect(result.incomplete).toBe(true);
+    expect(result.current.get("diff.f1")?.mark).toBeUndefined();
+    expect(result.removed[0].mark).toBeUndefined();
+  }
+});
+
+it("keeps comparison incomplete when either referenced excerpt lacks a hash", () => {
+  const document: SurfaceDocument = {
+    v: 1, summary: "Refs", view: { t: "plan", id: "plan", steps: [
+      { id: "step", title: "Plan", files: ["README.md"], detail: "See `src/a.ts:2`" },
+    ] },
+    questions: [{ id: "review", kind: "review", prompt: "Review", items: [
+      { id: "item", title: "Item", ref: "src/a.ts:2" },
+    ] }],
+  };
+  const earlier = make(document);
+  const snapshots = { excerpt: { ref: "src/a.ts:2", hash: "fingerprint", readAt: now, bytes: 5 } };
+  const current = make({ ...document, revises: earlier.id }, earlier, { snapshots });
+  for (const address of ["plan.step", reviewAddress("review", "item")]) {
+    for (const [next, old] of [[{ ...current, snapshots: {} }, earlier], [current, earlier],
+      [{ ...current, snapshots: {} }, { ...earlier, snapshots }]]) {
+      expect(revisionView(next, old, empty, empty)?.current.get(address)?.mark).toBeUndefined();
+      expect(revisionView(next, old, empty, empty)?.incomplete).toBe(true);
+    }
+    expect(revisionView(current, { ...earlier, snapshots }, empty, empty)?.current.get(address)?.mark).toBe("Unchanged");
+  }
+});

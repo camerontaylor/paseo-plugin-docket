@@ -6,30 +6,66 @@ import { callHost, getHub } from "./hub";
 import { useSurface } from "./use-surface";
 
 const empty: ChangesText = new Map();
+const attemptTimeoutMs = 4_000;
+const retryDelaysMs = [250, 1_000];
 
 function useFrozenChanges(hostId: string, record?: SurfaceRecord) {
   const surfaceId = record?.id;
   const key = JSON.stringify([hostId, surfaceId, Object.entries(record?.snapshots ?? {})
-    .flatMap(([id, snapshot]) => snapshot.kind === "changes" && typeof snapshot.block === "string" ? [[id, snapshot.block]] : [])]);
+    .flatMap(([id, snapshot]) => snapshot.kind === "changes" && typeof snapshot.block === "string" ? [[id, snapshot.block, snapshot.hash]] : [])]);
   const hub = getHub();
   const source = useSyncExternalStore(hub.subscribe, () => hub.sourceFor(hostId));
-  const [loaded, setLoaded] = useState<{ key: string; changes: ChangesText }>();
+  const [loaded, setLoaded] = useState<{ key: string; source: typeof source; changes: ChangesText }>();
   useEffect(() => {
     if (!surfaceId || !source) return;
-    const [, , entries] = JSON.parse(key) as [string, string, [string, string][]];
+    const id = surfaceId;
+    const [, , entries] = JSON.parse(key) as [string, string, [string, string, string][]];
     if (!entries.length) return;
     let active = true;
-    void Promise.allSettled(entries.map(async ([snapshotId, block]) => {
-      const text = await callHost(hub, hostId, evidenceGet, { surfaceId, snapshotId });
-      return [block, text] as const;
-    })).then((results) => {
-      if (!active || hub.sourceFor(hostId) !== source) return;
-      setLoaded({ key, changes: new Map(results.flatMap((result) =>
-        result.status === "fulfilled" && result.value[1] !== null ? [[result.value[0], result.value[1]]] : [])) });
-    });
-    return () => { active = false; };
+    const timers = new Set<ReturnType<typeof setTimeout>>();
+    const isCurrent = () => active && hub.sourceFor(hostId) === source;
+    const schedule = (run: () => void, ms: number) => {
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        run();
+      }, ms);
+      timers.add(timer);
+      return timer;
+    };
+    const cancel = (timer: ReturnType<typeof setTimeout>) => {
+      clearTimeout(timer);
+      timers.delete(timer);
+    };
+
+    function read(snapshotId: string, block: string, attempt: number) {
+      if (!isCurrent()) return;
+      let settled = false;
+      const deadline = schedule(() => finish(null), attemptTimeoutMs);
+      function finish(text: string | null) {
+        if (settled || !isCurrent()) return;
+        settled = true;
+        cancel(deadline);
+        if (text === null) {
+          const delay = retryDelaysMs[attempt];
+          if (delay !== undefined) schedule(() => read(snapshotId, block, attempt + 1), delay);
+          return;
+        }
+        setLoaded((prior) => ({
+          key, source,
+          changes: new Map(prior?.key === key && prior.source === source ? prior.changes : []).set(block, text),
+        }));
+      }
+      void callHost(hub, hostId, evidenceGet, { surfaceId: id, snapshotId })
+        .then(finish, () => finish(null));
+    }
+
+    for (const [id, block] of entries) read(id, block, 0);
+    return () => {
+      active = false;
+      for (const timer of timers) clearTimeout(timer);
+    };
   }, [hostId, surfaceId, key, hub, source]);
-  return loaded?.key === key ? loaded.changes : empty;
+  return loaded?.key === key && loaded.source === source ? loaded.changes : empty;
 }
 
 export function useRevisionView(hostId: string, record: SurfaceRecord) {

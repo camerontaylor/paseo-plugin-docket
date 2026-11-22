@@ -255,7 +255,7 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
     {record.revises && <View style={styles.stack}>
       <Copy muted>{earlier ? `Replaces · ${earlier.summary}`
         : loading ? "Loading earlier surface…" : "Earlier surface unavailable"}</Copy>
-      {comparison?.incomplete && <Copy muted>Some earlier item details are unavailable for comparison.</Copy>}
+      {comparison?.incomplete && <Copy muted>Some item evidence is unavailable for comparison.</Copy>}
     </View>}
     <SurfaceBlocks record={record} hostId={hostId} theme={theme} feedback={feedback} reviewPrompt={reviewPrompt}>
     <View style={styles.stack}>
