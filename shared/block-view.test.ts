@@ -1,10 +1,11 @@
 import { expect, it } from "vitest";
-import { boundReviews, parseChanges, sendableComments, splitHunks } from "./block-view";
+import { boundReviews, parseChanges, retainedItemComments, sendableComments, splitHunks } from "./block-view";
 import { parseMarkdown } from "./diagram/markdown";
 import { parseSequence } from "./diagram/sequence";
 import { parseFlowchart } from "./diagram/flowchart";
 import { layoutFlowchart, layoutSequence } from "./diagram/layout";
-import { applyCommand, createRecord } from "./transitions";
+import type { SurfaceRecord } from "./record";
+import { applyCommand, createRecord, type Command } from "./transitions";
 
 const now = "2026-11-22T12:00:00.000Z";
 
@@ -77,4 +78,69 @@ it("parses task lists, tables and fenced text, with layout for D10's two diagram
   expect(layoutSequence(sequence.participants, sequence.events.length).columns).toHaveLength(2);
   expect(parseFlowchart("pie\nTitle")).toBeNull();
   expect(parseSequence("pie\nTitle")).toBeNull();
+});
+
+
+function apply(record: SurfaceRecord, command: Command) {
+  const result = applyCommand(record, command);
+  if (!result.ok) throw Error(result.refusal.message);
+  return result.record;
+}
+
+it.each(["close", "closeReplaced"] as const)("keeps item drafts readable and actionable after %s", (kind) => {
+  const on = "plan.table";
+  const record = makeRecord({
+    id: "s_test01", agentId: "agent", now,
+    document: {
+      v: 1, summary: "Plan", questions: [{ id: "answer", kind: "text", prompt: "Review" }],
+      view: { t: "plan", steps: [{ id: "table", title: "Add the jobs table" }] },
+    },
+  });
+  const edit = { kind: "setComment", on, text: "Keep the migration reversible", baseVersion: 0, now } as const;
+  const drafted = apply(record, edit);
+  expect(retainedItemComments(drafted)).toEqual([]);
+  const closed = apply(drafted, kind === "close" ? { kind, now } : { kind, by: "s_test02", now });
+  expect(retainedItemComments(closed)).toEqual([{ on, title: "Add the jobs table", text: edit.text, version: 1 }]);
+
+  // An edit already buffered on a client can finish against the original item.
+  const saved = apply(closed, { ...edit, baseVersion: 1, text: "Use a reversible migration" });
+  const stale = applyCommand(saved, { ...edit, text: null, baseVersion: 1 });
+  expect(stale).toMatchObject({ ok: false, refusal: { code: "stale-draft" } });
+  const cleared = apply(saved, { ...edit, text: null, baseVersion: 2 });
+  expect(retainedItemComments(cleared)).toEqual([]);
+  expect(sendableComments(cleared)).toEqual([]);
+
+  const comments = sendableComments(saved);
+  const answer = applyCommand(saved, { kind: "send", targets: [{ target: "answer", version: 0 }], comments, now });
+  expect(answer).toMatchObject({ ok: false, refusal: { code: "closed" } });
+  const sent = apply(saved, { kind: "send", targets: [], comments, now: "2026-11-23T12:00:00Z" });
+  expect(sent.resolvedAt).toBe(closed.resolvedAt);
+  expect(sent.deliveries[0].text).toContain("Use a reversible migration");
+  expect(sent.deliveries[0].text).toContain("Add the jobs table");
+  expect(sent.deliveries[0].messageId).toContain(record.id);
+  expect(retainedItemComments(sent)).toEqual([]);
+  expect(sendableComments(sent)).toEqual([]);
+
+  const compacted = apply(saved, { kind: "compact", now, retentionDays: 0 });
+  expect(compacted.document).toBeNull();
+  expect(retainedItemComments(compacted)).toEqual(retainedItemComments(saved));
+  expect(sendableComments(compacted)).toEqual([]);
+  expect(applyCommand(compacted, { kind: "send", targets: [], comments, now })).toMatchObject({
+    ok: false, refusal: { code: "closed" },
+  });
+  expect(applyCommand(compacted, { ...edit, baseVersion: 2 })).toMatchObject({ ok: false, refusal: { code: "closed" } });
+  expect(retainedItemComments(apply(compacted, { ...edit, text: null, baseVersion: 2 }))).toEqual([]);
+});
+
+it("previews comments when a display-only surface is replaced or orphaned", () => {
+  const on = "plan.step";
+  const record = makeRecord({
+    id: "s_test01", agentId: "agent", now,
+    document: { v: 1, summary: "Plan", view: { t: "plan", steps: [{ id: "step", title: "Step" }] } },
+  });
+  const drafted = apply(record, { kind: "setComment", on, text: "Check the queue", baseVersion: 0, now });
+  const replaced = apply(drafted, { kind: "closeReplaced", by: "s_test02", now });
+  expect(replaced.closed).toBeNull();
+  expect(retainedItemComments(replaced)).toEqual([{ on, title: "Step", text: "Check the queue", version: 1 }]);
+  expect(retainedItemComments({ ...drafted, orphanedAt: now })).toEqual(retainedItemComments(replaced));
 });

@@ -197,7 +197,7 @@ export function hasOpenQuestion(record: SurfaceRecord): boolean {
   return Object.keys(record.questions).some((id) => record.questions[id].state === "open");
 }
 
-/** A retained item can receive feedback until its surface is closed or replaced. */
+/** Whether the card offers an editor for new item feedback. */
 export function canComment(record: SurfaceRecord): boolean {
   return !!record.document && !record.closed && !record.replacedBy;
 }

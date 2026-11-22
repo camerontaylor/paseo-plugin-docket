@@ -6,7 +6,7 @@ import { itemAddress } from "../shared/ids";
 import { LIMITS } from "../shared/limits";
 import { canComment, own, type Delivery, type DraftContent, type ItemRecord, type QuestionRecord, type SurfaceRecord } from "../shared/record";
 import { draftPreview, openTargets, recommendation, recommendations, sendableTargets, submittedPreview } from "./question-drafts";
-import { boundReviews, sendableComments } from "../shared/block-view";
+import { boundReviews, retainedItemComments, sendableComments } from "../shared/block-view";
 import { ItemReference, SurfaceBlocks, SurfaceMarkdown } from "./surface-blocks";
 import { useQuestionActions } from "./use-question-actions";
 
@@ -23,9 +23,9 @@ const styles = StyleSheet.create({
   multiline: { minHeight: 64, textAlignVertical: "top" },
 });
 
-function Copy({ children, muted, bold, lines }: { children: ReactNode; muted?: boolean; bold?: boolean; lines?: number }) {
+function Copy({ children, muted, bold, lines, selectable }: { children: ReactNode; muted?: boolean; bold?: boolean; lines?: number; selectable?: boolean }) {
   const colors = useColors();
-  return <Text numberOfLines={lines} style={[bold && styles.title, { color: muted ? colors.foregroundMuted : colors.foreground }]}>{children}</Text>;
+  return <Text selectable={selectable} numberOfLines={lines} style={[bold && styles.title, { color: muted ? colors.foregroundMuted : colors.foreground }]}>{children}</Text>;
 }
 
 function Button({ label, onPress, disabled, selected, detail, role = "button" }: {
@@ -91,7 +91,7 @@ function deliveryLabel(delivery: Delivery, wait: AgentWait) {
 }
 
 function DraftPreview({ draft }: { draft?: DraftContent | { text: string } | null }) {
-  return <Copy>{draftPreview(draft)}</Copy>;
+  return <Copy selectable>{draftPreview(draft)}</Copy>;
 }
 
 type Actions = ReturnType<typeof useQuestionActions>;
@@ -181,11 +181,12 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
   const orphaned = !!record.orphanedAt;
   const disabled = actions.locked || orphaned;
   const sendDisabled = actions.pending || actions.unsaved || orphaned;
-  const submitLabel = record.document?.submit?.label ?? "Send";
+  const submitLabel = !total && !canComment(record) ? "Send item comments" : record.document?.submit?.label ?? "Send";
 
   const bindings = boundReviews(record);
   const bound = new Set([...bindings.values()].flat());
-  const comments = canComment(record) ? sendableComments(record).length : 0;
+  const comments = sendableComments(record).length;
+  const retainedComments = retainedItemComments(record);
 
   function reviewItem(id: string, item: string, state: ItemRecord) {
     const target = itemAddress(id, item);
@@ -224,7 +225,7 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
         <Copy>{comment.text}</Copy>
         {delivery && <Copy muted>{deliveryLabel(delivery, wait)}</Copy>}
       </>}
-      {canComment(record) && <ItemComment value={actions.comment(on)} disabled={disabled}
+      {canComment(record) && !orphaned && <ItemComment value={actions.comment(on)} disabled={disabled}
         onChange={(text) => actions.saveComment(on, text)} />}
     </>;
   }
@@ -256,6 +257,14 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
         </View>;
       })}
       {orphaned && <Copy muted>Agent stopped</Copy>}
+      {retainedComments.map(({ on, title, text }) => <View key={on} style={styles.stack}>
+        <Copy bold>{title}</Copy>
+        <Copy muted>Unsent item comment</Copy>
+        <Copy selectable>{text}</Copy>
+        <View style={styles.row}>
+          <Button label="Clear item comment" disabled={actions.pending || actions.unsaved} onPress={() => actions.saveComment(on, "")} />
+        </View>
+      </View>)}
       {(total > 0 || comments > 0) && <View style={styles.row}>
         <Button label={`${submitLabel} (${total ? `${count} of ${total}${comments ? " · " : ""}` : ""}${comments ? `${comments} item comment${comments === 1 ? "" : "s"}` : ""})`} disabled={(!count && !comments) || sendDisabled} onPress={() => void actions.submit("send")} />
         {!!recommendations(record).length && <Button label="Accept recommended" disabled={sendDisabled} onPress={() => void actions.submit("recommended")} />}

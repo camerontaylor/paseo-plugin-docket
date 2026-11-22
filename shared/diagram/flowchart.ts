@@ -193,7 +193,13 @@ export function parseFlowchart(source: string): Flowchart | null {
     }
 
     const parsed = chain.parts.map((part) => parseNodeExpression(part.replace(/;$/, "")));
-    if (parsed.some((node) => node === null)) {
+    const unsupported = chain.operators.some((operator, index) =>
+      operator.style !== "solid" ||
+      parsed[index]?.id === parsed[index + 1]?.id ||
+      // A longer link such as A---->B can look like a node ID ending in "-".
+      chain.parts[index].endsWith("-") || chain.parts[index + 1].startsWith("-"),
+    );
+    if (unsupported || parsed.some((node) => node === null)) {
       skipped.push(original.trim());
       continue;
     }

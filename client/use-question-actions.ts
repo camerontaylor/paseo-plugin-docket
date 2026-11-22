@@ -55,6 +55,12 @@ export function useQuestionActions(
       throw new Error("The draft changed on another client. Review both drafts before editing again.");
     }
     const { code, message } = reply.refusal;
+    // Keep a buffered comment visible in the comparison/retry UI if the
+    // surface is compacted before the write reaches the server.
+    if (target.startsWith(commentPrefix) && code === "closed") {
+      setComparison([{ target, viewed: (edits.current.get(target) ?? edit).content, current: null }]);
+      throw new Error(message);
+    }
     if (code === "target-not-open" || code === "closed") return code;
     throw new Error(message);
   }

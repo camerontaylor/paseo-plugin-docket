@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { blockId, viewBlocks } from "./document";
-import type { SurfaceRecord } from "./record";
+import { canComment, type SurfaceRecord } from "./record";
 
 const changes = z.object({
   files: z.array(z.object({
@@ -34,8 +34,17 @@ export function boundReviews(record: SurfaceRecord) {
   return bindings;
 }
 
+function unsentComments(record: SurfaceRecord) {
+  return Object.entries(record.comments).filter(([, comment]) => comment.text && comment.delivery === null);
+}
+
+/** Drafts that need a standalone preview because the item editor is unavailable. */
+export function retainedItemComments(record: SurfaceRecord) {
+  if (canComment(record) && !record.orphanedAt) return [];
+  return unsentComments(record).map(([on, { title, text, version }]) => ({ on, title, text, version }));
+}
+
 export function sendableComments(record: SurfaceRecord) {
-  return Object.entries(record.comments).flatMap(([on, comment]) =>
-    comment.text && comment.delivery === null ? [{ on, version: comment.version }] : [],
-  );
+  if (!record.document) return [];
+  return unsentComments(record).map(([on, { version }]) => ({ on, version }));
 }

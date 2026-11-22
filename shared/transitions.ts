@@ -36,7 +36,6 @@ import {
   type SurfaceRecord,
   DEFAULT_RETENTION_DAYS,
   RECORD_SCHEMA,
-  canComment,
   draftIsEmpty,
   hasOpenQuestion,
   hasOwn,
@@ -467,24 +466,31 @@ function itemOfBlock(record: SurfaceRecord, on: string): ItemInfo | undefined {
 }
 
 function setComment(record: SurfaceRecord, cmd: SetComment): Result {
-  if (!canComment(record)) return closedRefusal(record);
-  const info = itemOfBlock(record, cmd.on);
-  if (!info) return refuse("unknown-target", `${JSON.stringify(cmd.on)} is not an item of a block on this surface`);
   const stored = own(record.comments, cmd.on);
+  const text = cmd.text ?? "";
+  // A write queued before close or replacement still belongs to the retained
+  // item. After compaction, only clearing an existing unsent draft is valid.
+  const info = record.document ? itemOfBlock(record, cmd.on) : undefined;
+  const retained = !record.document && text === "" && stored?.delivery === null ? stored : undefined;
+  const title = info?.title ?? retained?.title;
+  if (title === undefined) {
+    return record.document
+      ? refuse("unknown-target", `${JSON.stringify(cmd.on)} is not an item of a block on this surface`)
+      : closedRefusal(record);
+  }
   const storedVersion = stored ? stored.version : 0;
   if (cmd.baseVersion !== storedVersion) {
     return refuse("stale-draft", `the comment on ${cmd.on} is at version ${storedVersion}, not ${cmd.baseVersion}`, {
       current: stored && stored.text !== "" && stored.delivery === null ? stored : null,
     });
   }
-  const text = cmd.text ?? "";
   if (typeof text !== "string") return refuse("invalid", "a comment must be text");
   if (charCount(text) > LIMITS.answer) {
     return refuse("invalid-draft", `a comment is at most ${LIMITS.answer} characters`, {
       problems: [{ target: cmd.on, code: "invalid-draft", message: `a comment is at most ${LIMITS.answer} characters` }],
     });
   }
-  const comment: CommentRecord = { version: storedVersion + 1, text, title: info.title, delivery: null };
+  const comment: CommentRecord = { version: storedVersion + 1, text, title, delivery: null };
   // Older deliveries stored the sent version only in the current comment and frozen message.
   const deliveries = stored && stored.delivery !== null
     ? record.deliveries.map((d) => d.n === stored.delivery && !own(d.sentComments ?? {}, cmd.on)
@@ -519,7 +525,7 @@ function sendRecord(record: SurfaceRecord, cmd: Send): Result {
   const sentComments = cmd.comments ?? [];
   const skipList = cmd.skip ?? [];
   const commentsOnly = sentComments.length > 0 && targets.length === 0 && skipList.length === 0;
-  if (!doc || (!hasOpenQuestion(record) && !(commentsOnly && canComment(record)))) return closedRefusal(record);
+  if (!doc || (!hasOpenQuestion(record) && !commentsOnly)) return closedRefusal(record);
   if (targets.length + sentComments.length + skipList.length === 0) {
     return refuse("nothing-to-send", "nothing was named to send; choose answers or comments, or skip what is left");
   }
@@ -1124,7 +1130,7 @@ export function compactableAt(record: SurfaceRecord, retentionDays: number = DEF
 /**
  * Compaction (spec 26): the view, the snapshots and the evidence go; what spec
  * 11 lists as a decision stays. Questions still open (an orphaned surface)
- * expire. Unsent drafts go; sent comments, deliveries and answers stay.
+ * expire. Answer drafts go. Item comments (including unsent text), deliveries and answers stay.
  */
 function compact(record: SurfaceRecord, cmd: Compact): Result {
   const at = compactableAt(record, cmd.retentionDays);
@@ -1133,7 +1139,9 @@ function compact(record: SurfaceRecord, cmd: Compact): Result {
   const questions = { ...record.questions };
   for (const id of Object.keys(questions)) if (questions[id].state === "open") questions[id] = closeQuestion(questions[id]);
   const comments: Record<string, CommentRecord> = {};
-  for (const on of Object.keys(record.comments)) if (record.comments[on].delivery !== null) comments[on] = record.comments[on];
+  for (const [on, comment] of Object.entries(record.comments)) {
+    if (comment.text || comment.delivery !== null) comments[on] = comment;
+  }
   const next = bump(record, {
     document: null,
     snapshots: {},
