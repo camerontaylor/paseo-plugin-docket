@@ -1,4 +1,4 @@
-import { useEffect, useState, type ComponentType, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { Keyboard, ScrollView, Text, TextInput, View } from "react-native";
 import { useAgent, useAgents, useWorkspace, useWorkspaces } from "@getpaseo/plugin/client";
 import type { AgentRef, PluginClientContext, PluginHostProps, PluginScreenProps, PluginSidebarItemProps, WorkspaceRef } from "@getpaseo/plugin/client";
@@ -65,16 +65,41 @@ function WorkspaceFilter({ id, workspaceRef, active, choose, theme }: {
   return <InboxButton label={workspaceName(workspace, id)} selected={active} theme={theme} onPress={choose} />;
 }
 
-function ExpandedCard({ hostId, surfaceId, theme, controls, ready, fromHistory = false }: {
+// Retain only surfaces opened in this view. The owning screen releases the
+// controls on unmount, and each view supplies its own terminal removal signal.
+function useRetainedSurfaces() {
+  const [opened, setOpened] = useState(() => new Map<string, SurfaceTarget>());
+  function retain(target: SurfaceTarget) {
+    const key = entityKey(target.hostId, target.surfaceId);
+    setOpened((prior) => prior.has(key) ? prior : new Map(prior).set(key, target));
+  }
+  const prune = useCallback((keep: (target: SurfaceTarget, key: string) => boolean) => {
+    setOpened((prior) => {
+      const remaining = [...prior].filter(([key, target]) => keep(target, key));
+      return remaining.length === prior.size ? prior : new Map(remaining);
+    });
+  }, []);
+  const forget = useCallback((hostId: string, surfaceId: string) => {
+    const key = entityKey(hostId, surfaceId);
+    prune((_, openedKey) => openedKey !== key);
+  }, [prune]);
+  return { opened, retain, prune, forget };
+}
+
+function ExpandedCard({ hostId, surfaceId, theme, controls, ready, fromHistory = false, onMissing }: {
   hostId: string;
   surfaceId: string;
   theme: Theme;
   controls: AnswerControls;
   ready: boolean;
   fromHistory?: boolean;
+  onMissing?(hostId: string, surfaceId: string): void;
 }) {
   const { record, unavailable, refresh } = controls.useSurface(hostId, surfaceId);
   const blocked = !ready || unavailable;
+  useEffect(() => {
+    if (!blocked && record === null) onMissing?.(hostId, surfaceId);
+  }, [blocked, record, onMissing, hostId, surfaceId]);
   const { display, ...visibility } = paneVisibility(!blocked);
   return <View style={{ gap: 8 }}>
     {blocked && <View style={{ gap: 8 }}>
@@ -170,16 +195,13 @@ function InboxQueue({ theme, navigation, controls, inbox }: PluginScreenProps & 
   const [selectedWorkspace, setWorkspaceFilter] = useState<string>();
   const [label, setLabel] = useState("");
   const [now, setNow] = useState(Date.now);
-  const [opened, setOpened] = useState(() => new Set<string>());
+  const { opened, retain, prune } = useRetainedSurfaces();
   const eligible = inbox.cards.filter(({ summary }) => inboxSection(summary) !== undefined);
   useEffect(() => {
     const eligibleKeys = new Set(inbox.cards.flatMap(({ hostId, summary }) =>
       inboxSection(summary) ? [entityKey(hostId, summary.id)] : []));
-    setOpened((prior) => {
-      const remaining = [...prior].filter((key) => eligibleKeys.has(key));
-      return remaining.length === prior.size ? prior : new Set(remaining);
-    });
-  }, [inbox.cards]);
+    prune((_, key) => eligibleKeys.has(key));
+  }, [inbox.cards, prune]);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60_000);
@@ -212,7 +234,7 @@ function InboxQueue({ theme, navigation, controls, inbox }: PluginScreenProps & 
     const { hostId, summary } = card;
     const key = entityKey(hostId, summary.id);
     return <Card key={key} card={card} source={sources.get(hostId)} now={now}
-      visible={visible} opened={opened.has(key)} retain={() => setOpened((prior) => prior.has(key) ? prior : new Set(prior).add(key))}
+      visible={visible} opened={opened.has(key)} retain={() => retain({ hostId, surfaceId: summary.id })}
       agentRef={agentRefs.get(entityKey(hostId, summary.agentId))}
       workspaceRef={summary.workspaceId ? workspaceRefs.get(entityKey(hostId, summary.workspaceId)) : undefined}
       theme={theme} controls={controls} openChat={navigation && (() => navigation.openAgent({ serverId: hostId, agentId: summary.agentId }))} />;
@@ -269,6 +291,26 @@ function DocketInbox({ controls, ...props }: PluginScreenProps & { controls: Inb
   const inbox = useDocketInbox();
   const [tab, setTab] = useState<"inbox" | "decisions">("inbox");
   const [target, setTarget] = useState<SurfaceTarget>();
+  const { opened, retain, prune, forget } = useRetainedSurfaces();
+  useEffect(() => {
+    const hosts = new Set(inbox.sources.map(({ serverId }) => serverId));
+    prune(({ hostId }) => hosts.has(hostId));
+  }, [inbox.sources, prune]);
+
+  const selectedKey = target && entityKey(target.hostId, target.surfaceId);
+  const history = new Map(opened);
+  // Keep the selected missing surface visible until the user goes back.
+  if (selectedKey && target) history.set(selectedKey, target);
+  const { display: listDisplay, ...listVisibility } = paneVisibility(!target);
+  function openSurface(next: SurfaceTarget) {
+    Keyboard.dismiss();
+    retain(next);
+    setTarget(next);
+  }
+  function closeSurface() {
+    Keyboard.dismiss();
+    setTarget(undefined);
+  }
   function selectTab(next: typeof tab) {
     if (next === tab) return;
     Keyboard.dismiss();
@@ -283,17 +325,20 @@ function DocketInbox({ controls, ...props }: PluginScreenProps & { controls: Inb
       <InboxQueue {...props} controls={controls} inbox={inbox} />
     </InboxPane>
     <InboxPane active={tab === "decisions"}>
-      <View style={{ flex: 1, display: target ? "none" : "flex" }}>
-        <controls.Decisions theme={theme} openSurface={setTarget} />
+      <View {...listVisibility} style={{ flex: 1, display: listDisplay }}>
+        <controls.Decisions theme={theme} openSurface={openSurface} />
       </View>
-      {target && <ScrollView contentContainerStyle={{ padding: 16, gap: 12 }}>
-        <View style={buttonRow}>
-          <InboxButton theme={theme} label="Back to Decisions" onPress={() => setTarget(undefined)} />
-        </View>
-        <ExpandedCard key={entityKey(target.hostId, target.surfaceId)}
-          {...target} theme={theme} controls={controls} fromHistory
-          ready={inbox.sources.some((source) => source.serverId === target.hostId && source.docketStatus === "ready")} />
-      </ScrollView>}
+      {[...history].map(([key, entry]) => {
+        const { display, ...visibility } = paneVisibility(selectedKey === key);
+        const ready = inbox.sources.some((source) => source.serverId === entry.hostId && source.docketStatus === "ready");
+        return <ScrollView key={key} {...visibility} style={{ flex: 1, display }}
+          contentContainerStyle={{ padding: 16, gap: 12 }}>
+          <View style={buttonRow}>
+            <InboxButton theme={theme} label="Back to Decisions" onPress={closeSurface} />
+          </View>
+          <ExpandedCard {...entry} theme={theme} controls={controls} fromHistory ready={ready} onMissing={forget} />
+        </ScrollView>;
+      })}
     </InboxPane>
   </View>;
 }

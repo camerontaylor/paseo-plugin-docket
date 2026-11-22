@@ -13,6 +13,7 @@ vi.mock("react", async (load) => ({
   ...await load<typeof import("react")>(),
   useState: vi.fn(),
   useEffect: vi.fn(),
+  useCallback: (callback: unknown) => callback,
 }));
 vi.mock("react-native", () => ({ View: "View", Text: "Text", TextInput: "TextInput", ScrollView: "ScrollView" }));
 vi.mock("@getpaseo/plugin/client", () => ({
@@ -85,7 +86,8 @@ function queue(inbox: ReturnType<typeof useDocketInbox>) {
   contribute({ addScreen, addSidebarHeaderItem: () => vi.fn() } as unknown as PluginClientContext);
   const screen = addScreen.mock.calls[0][0].Component as (props: PluginScreenProps) => Element;
   vi.mocked(useDocketInbox).mockReturnValue(inbox);
-  vi.mocked(useState).mockReset().mockReturnValueOnce(["inbox", vi.fn()]).mockReturnValueOnce([undefined, vi.fn()]);
+  vi.mocked(useState).mockReset().mockReturnValueOnce(["inbox", vi.fn()]).mockReturnValueOnce([undefined, vi.fn()])
+    .mockReturnValueOnce([new Map(), vi.fn()]);
   const tree = render(screen({ theme } as PluginScreenProps));
   expect(find(tree, (element) => element.props.accessibilityRole === "tablist")).toBeDefined();
   expect(find(tree, (element) => element.props.label === "Decisions")?.props.role).toBe("tab");
@@ -99,7 +101,7 @@ it("keeps expanded controls at the same keyed position across stale and reconnec
   const refresh = vi.fn();
   const list = queue({ sources: [ready], cards: [card], count: { kind: "exact", value: 1 } });
   vi.mocked(useState).mockReturnValueOnce([undefined, vi.fn()]).mockReturnValueOnce([undefined, vi.fn()])
-    .mockReturnValueOnce(["", vi.fn()]).mockReturnValueOnce([0, vi.fn()]).mockReturnValueOnce([new Set(), vi.fn()]);
+    .mockReturnValueOnce(["", vi.fn()]).mockReturnValueOnce([0, vi.fn()]).mockReturnValueOnce([new Map(), vi.fn()]);
   const row = find(render(list), (element) => element.props.card === card)!;
 
   function expandedFor(status: "ready" | "stale", unavailable = false, hostId = "a") {
@@ -132,7 +134,7 @@ it("restores remaining cards when the selected host and its workspace disappear"
   const setWorkspace = vi.fn();
   const list = queue({ sources: [host("b")], cards: [card], count: { kind: "exact", value: 1 } });
   vi.mocked(useState).mockReturnValueOnce(["a", setHost]).mockReturnValueOnce(['["a","workspace"]', setWorkspace])
-    .mockReturnValueOnce(["", vi.fn()]).mockReturnValueOnce([0, vi.fn()]).mockReturnValueOnce([new Set(), vi.fn()]);
+    .mockReturnValueOnce(["", vi.fn()]).mockReturnValueOnce([0, vi.fn()]).mockReturnValueOnce([new Map(), vi.fn()]);
   vi.mocked(useEffect).mockClear();
   const tree = render(list);
   expect(find(tree, (element) => element.props.card === card)).toBeDefined();

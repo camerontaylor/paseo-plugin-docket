@@ -142,3 +142,113 @@ it.each(["collapse", "filter"])("preserves unsaved and conflict state across sec
     vi.unstubAllGlobals();
   }
 });
+
+it.each(["Back/reopen", "different history target"])("retains history answers across %s", async (transition) => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const theme = { colors: {} } as PluginScreenProps["theme"];
+  const target = (hostId: string) => ({ hostId, surfaceId: "s_aaaaaa" });
+  const host = (serverId: string, docketStatus: "ready" | "stale" = "ready") => ({
+    serverId, label: serverId, status: "online" as const, docketStatus,
+    summaries: undefined, updatedAt: undefined,
+  });
+  let missing = false;
+  const refresh = vi.fn();
+  function Questions({ hostId }: { hostId: string }) {
+    const [draft, setDraft] = useState("");
+    const [conflict, setConflict] = useState(false);
+    return <button id={hostId} onClick={() => { setDraft("unsent answer"); setConflict(true); }}>
+      {draft || "edit answer"}{conflict && " · conflict"}
+    </button>;
+  }
+  const addScreen = vi.fn<PluginClientContext["addScreen"]>(() => vi.fn());
+  registerInbox({ addScreen, addSidebarHeaderItem: () => vi.fn() } as unknown as PluginClientContext, {
+    useSurface: (hostId) => ({
+      record: missing && hostId === "a" ? null : { summary: hostId, compactedAt: null } as SurfaceRecord,
+      unavailable: false, refresh,
+    }),
+    SurfaceQuestions: Questions,
+    Decisions: ({ openSurface }) => <ViewHistory openSurface={openSurface} />,
+  });
+  function ViewHistory({ openSurface }: { openSurface(next: ReturnType<typeof target>): void }) {
+    return <>
+      <button id="open-a" onClick={() => openSurface(target("a"))}>Open A</button>
+      <button id="open-b" onClick={() => openSurface(target("b"))}>Open B</button>
+    </>;
+  }
+
+  const Screen = addScreen.mock.calls[0][0].Component;
+  const screen = () => <Screen {...({ theme } as PluginScreenProps)} />;
+  function update(docketStatus: "ready" | "stale" = "ready") {
+    vi.mocked(useDocketInbox).mockReturnValue({
+      sources: [host("a", docketStatus), host("b")], cards: [], count: { kind: "exact", value: 0 },
+    });
+  }
+
+  let renderer!: ReturnType<typeof create>;
+  update();
+  try {
+    await act(() => { renderer = create(screen()); });
+    const button = (id: string) => renderer.root.findAllByType("button").find((node) => node.props.id === id)!;
+    const click = (id: string) => act(() => button(id).props.onClick());
+    const draft = () => button("a").props.children;
+    async function press(label: string) {
+      const buttons = renderer.root.findAll((node) => node.type === "Pressable");
+      const visible = buttons.find((node) => {
+        if (node.findByType("Text").props.children !== label) return false;
+        for (let parent = node.parent; parent; parent = parent.parent) {
+          if (parent.props.style?.display === "none") return false;
+        }
+        return true;
+      });
+      expect(visible).toBeDefined();
+      await act(() => visible!.props.onPress());
+    }
+    function expectHidden(id: string) {
+      const retained = button(id);
+      expect(retained).toBeDefined();
+      let parent = retained.parent;
+      while (parent && parent.props.style?.display !== "none") parent = parent.parent;
+      expect(parent?.props).toMatchObject({ accessibilityElementsHidden: true,
+        importantForAccessibility: "no-hide-descendants", pointerEvents: "none" });
+    }
+
+    await press("Decisions");
+    await click("open-a");
+    await click("a");
+    await press("Back to Decisions");
+    if (transition === "different history target") {
+      await click("open-b");
+      expect(button("b").props.children[0]).toBe("edit answer");
+      expectHidden("a");
+      expect(draft()).toEqual(["unsent answer", " · conflict"]);
+      await press("Back to Decisions");
+    } else {
+      expectHidden("a");
+    }
+    await click("open-a");
+    expect(draft()).toEqual(["unsent answer", " · conflict"]);
+    expectHidden("open-a");
+
+    update("stale");
+    await act(() => renderer.update(screen()));
+    expectHidden("a");
+    update();
+    await act(() => renderer.update(screen()));
+    expect(draft()).toEqual(["unsent answer", " · conflict"]);
+
+    missing = true;
+    await act(() => renderer.update(screen()));
+    expect(button("a")).toBeUndefined();
+    expect(renderer.root.findAll((node) => node.type === "Text"
+      && node.props.children === "This surface is no longer available.")).toHaveLength(1);
+    await press("Back to Decisions");
+    missing = false;
+    await act(() => renderer.update(screen()));
+    expect(button("a")).toBeUndefined();
+    await click("open-a");
+    expect(draft()[0]).toBe("edit answer");
+  } finally {
+    await act(() => renderer?.unmount());
+    vi.unstubAllGlobals();
+  }
+});
