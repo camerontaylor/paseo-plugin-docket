@@ -1,8 +1,12 @@
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { PluginServerContext } from "@getpaseo/plugin/server";
+import type { ZodType } from "zod";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type SurfaceDocument, LIMITS } from "../shared";
+import { startRetention } from "./retention";
+import { registerToolSettings } from "./tools";
 import { type CrashPoint, type Store, InjectedCrash, defaultStoreRoot, openStore } from "./store";
 
 const DOC: SurfaceDocument = {
@@ -453,6 +457,52 @@ describe("summaries", () => {
 });
 
 describe("decisions, search, deletion and compaction", () => {
+  it("preserves evidence until recovered host settings make compaction due", async () => {
+    const store = await open();
+    const { record } = must(await store.create({ agentId: "ag1", document: DOC, evidence: { "x.txt": "e" } }));
+    await answered(store, record.id);
+    clock += 40 * 86_400_000;
+
+    const server = {
+      registerSettings: ({ schema }: { schema: ZodType }) => ({
+        read: vi.fn()
+          .mockRejectedValueOnce(new Error("settings RPC unavailable"))
+          .mockResolvedValueOnce({ status: "invalid", revision: "broken", error: "invalid settings" })
+          .mockResolvedValue({ status: "ready", revision: "configured", values: schema.parse({ retentionDays: 60 }) }),
+      }),
+    } as unknown as PluginServerContext;
+    const { readRetentionDays } = registerToolSettings(server);
+    const getStore = vi.fn(async () => store);
+    const compactDue = vi.spyOn(store, "compactDue");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const stop = startRetention(getStore, readRetentionDays);
+    try {
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+      expect(getStore).not.toHaveBeenCalled();
+      expect(compactDue).not.toHaveBeenCalled();
+      expect(store.get(record.id)?.compactedAt).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+      expect(compactDue).toHaveBeenLastCalledWith(60);
+      expect(store.get(record.id)?.compactedAt).toBeNull();
+      const evidence = path.join(dir, "evidence", record.id, "x.txt");
+      await expect(fs.readFile(evidence, "utf8")).resolves.toBe("e");
+
+      clock += 20 * 86_400_000;
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+      await stop();
+      expect(compactDue).toHaveBeenCalledTimes(2);
+      expect(store.get(record.id)?.document).toBeNull();
+      await expect(fs.stat(evidence)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(store.decisions({ text: "cheaper" })).toHaveLength(1);
+    } finally {
+      await stop();
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
   it("finds a decision by words in its note after compaction, with each review item's title", async () => {
     const store = await open({ retentionDays: 30 });
     const { record } = must(await store.create({ agentId: "ag1", document: DOC, evidence: { "x.txt": "e" } }));
@@ -502,7 +552,9 @@ describe("decisions, search, deletion and compaction", () => {
     const store = await open({ retentionDays: 10 });
     const { record } = must(await store.create({ agentId: "ag1", document: DOC }));
     must(await store.apply(record.id, { kind: "holdOnArchive", now: new Date(clock).toISOString() }));
-    clock += 11 * 86_400_000;
+    clock += 9 * 86_400_000;
+    expect(await store.compactDue()).toEqual([]);
+    clock += 86_400_000;
     expect(await store.compactDue()).toEqual([record.id]);
     expect(store.get(record.id)?.closed?.by).toBe("expired");
   });

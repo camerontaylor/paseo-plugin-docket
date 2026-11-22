@@ -81,12 +81,27 @@ export async function callHost<C extends PluginRpcContract<ZodType, ZodType<{ ho
   return reply.result;
 }
 
+const DECISION_SEARCH_TIMEOUT_MS = 10_000;
+
 export async function searchHostDecisions(hub: Hub, hostIds: readonly string[], query: RpcInput<typeof decisionsSearch>) {
-  const results = await Promise.allSettled(hostIds.map((id) => callHost(hub, id, decisionsSearch, query)));
+  const sources = hostIds.map(hub.sourceFor);
+  const results = await Promise.allSettled(hostIds.map(async (id) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Docket decision search timed out")), DECISION_SEARCH_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([callHost(hub, id, decisionsSearch, query), deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }));
   const unavailable: string[] = [];
   const decisions = results.flatMap((result, index) => {
     const hostId = hostIds[index];
-    if (result.status === "fulfilled") return result.value.map((decision) => ({ ...decision, hostId }));
+    if (result.status === "fulfilled" && sources[index] === hub.sourceFor(hostId)) {
+      return result.value.map((decision) => ({ ...decision, hostId }));
+    }
     unavailable.push(hostId);
     return [];
   });

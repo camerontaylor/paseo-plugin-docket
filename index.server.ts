@@ -6,6 +6,7 @@ import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
 import { startDelivery } from "./server/delivery";
 import type { PaseoApi } from "./server/delivery-host";
+import { startRetention } from "./server/retention";
 import { registerRpc } from "./server/rpc";
 import { openStore } from "./server/store";
 import { attachDocketTools, isDocketPermission, registerToolSettings } from "./server/tools";
@@ -28,11 +29,11 @@ export default function contribute(server: PluginServerContext) {
     version: 1,
     schema: z.object({ transport: z.enum(["auto", "direct"]).default("auto") }),
   }));
-  const readToolSettings = registerToolSettings(server);
+  const { readToolSettings, readRetentionDays } = registerToolSettings(server);
   let storePromise: ReturnType<typeof openStore> | undefined;
   function getStore() {
     return storePromise ??= readToolSettings()
-      .then(({ retentionDays, recordEvents }) => openStore({ retentionDays, recordEvents }))
+      .then(({ recordEvents }) => openStore({ recordEvents }))
       .catch((error: unknown) => {
         storePromise = undefined;
         throw error;
@@ -69,9 +70,9 @@ export default function contribute(server: PluginServerContext) {
     server.addHook("agent.permission.after", async ({ agent }, { paseo }) => (await connect(paseo)).check(agent.id)),
     server.addHook("agent.archive.after", async ({ agent }, { paseo }) => (await connect(paseo)).archive(agent.id)),
   ];
+  const stopRetention = startRetention(getStore, readRetentionDays);
   return async () => {
     for (const stop of stopHooks) stop();
-    const worker = await delivery?.catch(() => undefined);
-    await worker?.stop();
+    await Promise.all([delivery?.then((worker) => worker.stop(), () => undefined), stopRetention()]);
   };
 }
