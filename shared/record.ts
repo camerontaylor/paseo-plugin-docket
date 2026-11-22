@@ -85,6 +85,7 @@ export interface QuestionRecord {
   label: string;
   prompt: string;
   state: QuestionState;
+  closeReason?: string;
   answer?: AnswerRecord;
   delivery?: number;
   /** A review's items, by item id, in document order. */
@@ -291,7 +292,7 @@ export function isRecordV1(value: unknown): value is SurfaceRecord {
     object(r.questions) &&
     Object.values(r.questions).every((q) =>
       object(q) && (q.kind === "choice" || q.kind === "text" || q.kind === "review")
-      && typeof q.label === "string" && typeof q.prompt === "string" && state(q.state) && optionalNumber(q.delivery)
+      && typeof q.label === "string" && typeof q.prompt === "string" && state(q.state) && optionalNumber(q.delivery) && optionalString(q.closeReason)
       && (q.answer === undefined || (object(q.answer) &&
         (q.answer.text === undefined || strings(q.answer.text)) && optionalString(q.answer.note) && optionalString(q.answer.other)))
       && (q.items === undefined || (object(q.items) && Object.values(q.items).every((item) =>
