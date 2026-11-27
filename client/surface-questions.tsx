@@ -453,6 +453,7 @@ export function SurfaceQuestions({ hostId, theme, record, refresh }: {
           <Text style={{ ...type.meta, color: actions.unsaved ? colors.statusWarning : colors.foregroundMuted }}>
             {actions.unsaved ? "Drafts not saved yet"
               : actions.pending ? "Saving…"
+              : !total ? comments === 1 ? "Send the item comment to the agent" : "Send the item comments to the agent"
               : count && count < total ? "Unanswered questions stay open after sending"
               : drafted ? "Draft saved on the host" : "Pick answers, then send"}
           </Text>

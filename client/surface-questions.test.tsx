@@ -70,3 +70,23 @@ it.each([true, false])("lets a user copy or discard a closed edit (refreshed rec
   expect(tree.root.findAllByType("Text" as never).some((node) => node.children.join("") === "Comment: Unsaved text")).toBe(false);
   await act(() => tree.unmount());
 });
+
+it("describes a comment-only send in the send bar", async () => {
+  const result = createRecord({
+    id: "s_aaaaaa", agentId: "agent", now: "2026-11-21T10:00:00Z", document: { v: 1, summary: "Review" },
+  });
+  if (!result.ok) throw new Error(result.refusal.message);
+  const record = { ...result.record, comments: {
+    "plan.step": { version: 1, text: "Unsent note", title: "Plan step", delivery: null },
+  } };
+  let tree!: ReturnType<typeof create>;
+  await act(() => {
+    tree = create(<SurfaceQuestions hostId="host" theme={{ colors: {} } as Parameters<typeof SurfaceQuestions>[0]["theme"]}
+      record={record} refresh={async () => record} />);
+  });
+  const texts = tree.root.findAllByType("Text" as never).map((node) => node.children.join(""));
+  expect(texts).toContain("1 item comment");
+  expect(texts).toContain("Send the item comment to the agent");
+  expect(texts).not.toContain("Pick answers, then send");
+  await act(() => tree.unmount());
+});

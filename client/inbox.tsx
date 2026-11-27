@@ -324,8 +324,9 @@ function FilterField({ theme, value, onChange }: { theme: Theme; value: string; 
       placeholderTextColor={colors.foregroundMuted} value={value} onChangeText={onChange}
       onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
       style={{ ...type.body, flex: 1, minHeight: 38, color: colors.foreground, outlineStyle: undefined, borderWidth: 0 }} />
-    {!!value && <Pressable accessibilityRole="button" accessibilityLabel="Clear filter" onPress={() => onChange("")}
-      style={{ padding: 4 }}><Glyph name="X" color={colors.foregroundMuted} size={14} /></Pressable>}
+    {!!value && <Pressable accessibilityRole="button" accessibilityLabel="Clear label filter" onPress={() => onChange("")}
+      style={{ minWidth: 28, minHeight: 28, alignItems: "center", justifyContent: "center", borderRadius: radius.sm }}>
+      <Glyph name="X" color={colors.foregroundMuted} size={14} /></Pressable>}
   </View>;
 }
 
