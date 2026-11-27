@@ -7,7 +7,7 @@ import type { PluginWorkspaceSnapshot } from "@getpaseo/plugin";
 import type { SurfaceRecord } from "../shared/record";
 import { InboxButton, buttonRow } from "./inbox-button";
 import { countLabel, entityKey, groupInbox, inboxSection, type inboxSections } from "./inbox-query";
-import { Button, Chip, EmptyState, Glyph, Notice, NoticeText, Pill, SectionLabel, inputStyle, radius, row, space, toneColor, type, type Tone } from "./kit";
+import { Button, Chip, EmptyState, Glyph, Notice, NoticeText, Pill, SectionLabel, inputStyle, paneVisibility, radius, row, space, toneColor, type, type Tone } from "./kit";
 import { useDocketInbox } from "./use-docket";
 
 const screenId = "inbox";
@@ -124,22 +124,14 @@ function ExpandedCard({ hostId, surfaceId, theme, controls, ready, fromHistory =
         {record.compactedAt !== null && <Notice colors={colors} icon="Archive">
           <NoticeText colors={colors}>The original view was compacted. Saved answers are shown below.</NoticeText>
         </Notice>}
-        {(record.compactedAt !== null || !record.document) && record.context
-          && <Text selectable style={{ ...type.body, color: colors.foregroundMuted }}>{record.context}</Text>}
       </>}
+      {/* Without its document the blocks cannot show the context, so show the retained copy. */}
+      {!record.document && !!record.context
+        && <Text selectable style={{ ...type.body, color: colors.foregroundMuted }}>{record.context}</Text>}
       <controls.SurfaceQuestions key={entityKey(hostId, surfaceId)}
         hostId={hostId} theme={theme} record={record} refresh={refresh} />
     </View>}
   </View>;
-}
-
-function paneVisibility(visible: boolean) {
-  return {
-    display: visible ? "flex" as const : "none" as const,
-    accessibilityElementsHidden: !visible,
-    importantForAccessibility: visible ? "auto" as const : "no-hide-descendants" as const,
-    pointerEvents: visible ? "auto" as const : "none" as const,
-  };
 }
 
 type CardStatus = { label: string; tone: Tone; icon: string };
@@ -299,6 +291,8 @@ function InboxQueue({ theme, navigation, controls, inbox }: PluginScreenProps & 
   }
   const colors = theme.colors;
   const filtered = !!(hostFilter || workspaceFilter || needle);
+  // Cards without a workspace form their own group: one workspace plus those still needs a filter.
+  const unassigned = [...availableGroups.values()].flat().some(({ summary }) => !summary.workspaceId);
   return <ScrollView style={{ flex: 1, backgroundColor: colors.surface0 }} keyboardShouldPersistTaps="handled"
     contentContainerStyle={{ padding: space.lg, gap: space.md, width: "100%", maxWidth: 880, alignSelf: "center" }}>
     {inbox.sources.filter((source) => source.docketStatus !== "ready").map((source) =>
@@ -318,7 +312,7 @@ function InboxQueue({ theme, navigation, controls, inbox }: PluginScreenProps & 
         selected={serverId === hostFilter}
         onPress={() => { setHostFilter(serverId); setWorkspaceFilter(undefined); }} />)}
     </View>}
-    {(workspaces.size > 1 || workspaceFilter) && <View accessibilityLabel="Filter by workspace" style={row}>
+    {(workspaces.size + (unassigned ? 1 : 0) > 1 || workspaceFilter) && <View accessibilityLabel="Filter by workspace" style={row}>
       <Chip colors={colors} label="All workspaces" selected={!workspaceFilter} onPress={() => setWorkspaceFilter(undefined)} />
       {[...workspaces].map(([key, id]) => <WorkspaceFilter key={key} id={id} workspaceRef={workspaceRefs.get(key)}
         active={key === workspaceFilter} choose={() => setWorkspaceFilter(key)} theme={theme} />)}

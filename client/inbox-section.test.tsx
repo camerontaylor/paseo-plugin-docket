@@ -252,3 +252,43 @@ it.each(["Back/reopen", "different history target"])("retains history answers ac
     vi.unstubAllGlobals();
   }
 });
+
+it("shows retained context for a compacted card and offers workspace filters beside unassigned cards", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const theme = { colors: {} } as PluginScreenProps["theme"];
+  const base: Summary = {
+    id: "s_aaaaaa", rev: 1, agentId: "agent", workspaceId: null, summary: "Question",
+    status: "resolved", createdAt: "2026-11-22T00:00:00Z", resolvedAt: null, openQuestions: 0,
+    pendingDeliveries: 1, replacedBy: null, revises: null, compacted: true, context: "Kept context",
+  };
+  const host = { serverId: "a", label: "a", status: "online" as const, docketStatus: "ready" as const,
+    summaries: undefined, updatedAt: undefined };
+  vi.mocked(useDocketInbox).mockReturnValue({
+    sources: [host],
+    cards: [{ hostId: "a", summary: base }, { hostId: "a", summary: { ...base, id: "s_bbbbbb", workspaceId: "w" } }],
+    count: { kind: "exact", value: 2 },
+  });
+  const addScreen = vi.fn<PluginClientContext["addScreen"]>(() => vi.fn());
+  registerInbox({ addScreen, addSidebarHeaderItem: () => vi.fn() } as unknown as PluginClientContext, {
+    useSurface: () => ({ record: { summary: "Question", compactedAt: "2026-11-23T00:00:00Z", document: null,
+      context: "Kept context" } as SurfaceRecord, unavailable: false, refresh: vi.fn() }),
+    SurfaceQuestions: () => null,
+    Decisions: () => null,
+  });
+  const Screen = addScreen.mock.calls[0][0].Component;
+  let renderer!: ReturnType<typeof create>;
+  try {
+    await act(() => { renderer = create(<Screen {...({ theme } as PluginScreenProps)} />); });
+    const texts = (value: string) => renderer.root.findAll((node) => node.type === "Text" && node.props.children === value);
+    expect(texts("All workspaces")).toHaveLength(1);
+    const details = renderer.root.findAll((node) => node.type === "Pressable"
+      && node.props.accessibilityLabel === "Delivery details: Question")[0];
+    await act(() => details.props.onPress());
+    // The collapsed preview of the expanded card is gone; the retained copy is what remains visible.
+    expect(texts("Kept context")).toHaveLength(2);
+    expect(texts("Kept context").filter((node) => node.props.numberOfLines === undefined)).toHaveLength(1);
+  } finally {
+    await act(() => renderer?.unmount());
+    vi.unstubAllGlobals();
+  }
+});

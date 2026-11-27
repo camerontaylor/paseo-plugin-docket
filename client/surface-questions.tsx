@@ -63,8 +63,9 @@ function Option({ label, detail, recommended, selected, multi, disabled, onPress
 }) {
   const colors = useColors();
   return <Pressable accessibilityRole={multi ? "checkbox" : "radio"}
-    accessibilityLabel={`${label}${recommended ? ", recommended" : ""}`}
-    accessibilityState={{ checked: selected, disabled }} disabled={disabled} onPress={onPress}
+    accessibilityLabel={`${label}${detail ? `, ${detail}` : ""}${recommended ? ", recommended" : ""}`}
+    accessibilityState={{ checked: selected, disabled }} aria-checked={selected} aria-disabled={disabled}
+    disabled={disabled} onPress={onPress}
     style={(state) => {
       const { hovered, focused } = state as { hovered?: boolean; focused?: boolean };
       return {
@@ -214,7 +215,8 @@ function TargetControls({ question, target, item, actions, disabled }: {
             const on = verdict === draft.verdict;
             return <Pressable key={verdict} accessibilityRole="radio"
               accessibilityLabel={verdict === rec ? `${verdict}, recommended` : verdict}
-              accessibilityState={{ checked: on, disabled: fieldDisabled }} disabled={fieldDisabled}
+              accessibilityState={{ checked: on, disabled: fieldDisabled }} aria-checked={on} aria-disabled={fieldDisabled}
+              disabled={fieldDisabled}
               onPress={() => manual({ verdict })}
               style={(state) => {
                 const { focused } = state as { focused?: boolean };

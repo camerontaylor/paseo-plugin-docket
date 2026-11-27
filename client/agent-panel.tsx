@@ -1,39 +1,46 @@
 import type { PluginAgentPanelProps, PluginClientContext } from "@getpaseo/plugin/client";
 import { useState, useSyncExternalStore } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { Keyboard, ScrollView, Text, View } from "react-native";
 import type { Summary } from "../shared/projections";
 import { AGENT_PANEL_ICON, AGENT_PANEL_ID, agentSurfaces, registerComposerPills } from "./agent-panel-model";
 import { getHub } from "./hub";
-import { Button, EmptyState, Notice, NoticeText, Pill, SectionLabel, radius, row, space, type } from "./kit";
+import { Button, EmptyState, Notice, NoticeText, Pill, SectionLabel, paneVisibility, radius, row, space, type } from "./kit";
 import { SurfaceQuestions } from "./surface-questions";
 import { useSurface } from "./use-surface";
 
 type Theme = PluginAgentPanelProps["theme"];
 
+/**
+ * The answer controls for one surface. Once loaded they stay mounted while the
+ * host is unavailable, hidden and inert, so unsaved edits and draft conflicts
+ * held by the controls survive a reconnect.
+ */
 function SurfaceAnswers({ hostId, surfaceId, theme }: { hostId: string; surfaceId: string; theme: Theme }) {
   const { record, unavailable, refresh } = useSurface(hostId, surfaceId);
   const colors = theme.colors;
-  if (unavailable) {
-    return <Notice colors={colors} tone="warning" icon="CloudOff"
+  const { display, ...visibility } = paneVisibility(!unavailable);
+  return <View style={{ gap: space.md }}>
+    {unavailable && <Notice colors={colors} tone="warning" icon="CloudOff"
       action={<Button colors={colors} compact icon="RotateCw" label="Refresh" onPress={() => void refresh()} />}>
       <NoticeText colors={colors}>Docket server unavailable</NoticeText>
-    </Notice>;
-  }
-  if (!record) {
-    return <Text style={{ ...type.body, color: colors.foregroundMuted }}>
+    </Notice>}
+    {!unavailable && !record && <Text style={{ ...type.body, color: colors.foregroundMuted }}>
       {record === null ? "This surface is no longer available." : "Loading questions…"}
-    </Text>;
-  }
-  return <View style={{ gap: space.md }}>
-    <SurfaceQuestions key={JSON.stringify([hostId, surfaceId])} hostId={hostId} record={record} theme={theme} refresh={refresh} />
+    </Text>}
+    {record && <View {...visibility} style={{ display, gap: space.md }}>
+      <SurfaceQuestions key={JSON.stringify([hostId, surfaceId])} hostId={hostId} record={record} theme={theme} refresh={refresh} />
+    </View>}
   </View>;
 }
 
 function SurfaceRow({ surface, hostId, theme, startOpen }: { surface: Summary; hostId: string; theme: Theme; startOpen: boolean }) {
   const [open, setOpen] = useState(startOpen);
+  // Keep the controls after the first expansion; collapsing only hides them.
+  const [mounted, setMounted] = useState(startOpen);
   const colors = theme.colors;
   const waiting = surface.status === "open";
   const label = waiting ? surface.openQuestions === 1 ? "1 open question" : `${surface.openQuestions} open questions` : "Answered";
+  const { display, ...visibility } = paneVisibility(open);
   return <View style={{ gap: space.md, padding: space.lg, borderRadius: radius.md, borderWidth: 1,
     borderColor: open && waiting ? colors.accent : colors.border, backgroundColor: colors.surface1 }}>
     <View style={[row, { justifyContent: "space-between" }]}>
@@ -46,9 +53,13 @@ function SurfaceRow({ surface, hostId, theme, startOpen }: { surface: Summary; h
       <Button colors={colors} variant={open ? "secondary" : waiting ? "primary" : "secondary"} compact
         icon={open ? "ChevronUp" : waiting ? "PenLine" : "Eye"} label={open ? "Collapse" : waiting ? "Answer" : "View answers"}
         accessibilityLabel={`${open ? "Collapse" : waiting ? "Answer" : "View answers"}: ${surface.summary}`}
-        onPress={() => setOpen(!open)} />
+        onPress={() => {
+          if (open) Keyboard.dismiss();
+          else setMounted(true);
+          setOpen(!open);
+        }} />
     </View>
-    {open && <View style={{ borderTopWidth: 1, borderColor: colors.border, paddingTop: space.md }}>
+    {mounted && <View {...visibility} style={{ display, borderTopWidth: 1, borderColor: colors.border, paddingTop: space.md }}>
       <SurfaceAnswers hostId={hostId} surfaceId={surface.id} theme={theme} />
     </View>}
   </View>;

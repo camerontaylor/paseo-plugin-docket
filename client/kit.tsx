@@ -75,7 +75,9 @@ export function Button({ colors, label, onPress, variant = "secondary", icon, di
     : variant === "ghost" ? colors.accent
     : variant === "quiet" ? colors.foregroundMuted : colors.foreground;
   return <Pressable accessibilityRole={role} accessibilityLabel={accessibilityLabel}
-    accessibilityState={{ disabled: !!disabled, selected }} disabled={disabled} onPress={onPress}
+    // react-native-web reads aria-* props; accessibilityState alone reaches native only.
+    accessibilityState={{ disabled: !!disabled, selected }} aria-disabled={!!disabled}
+    aria-selected={role === "tab" ? !!selected : undefined} disabled={disabled} onPress={onPress}
     style={(state) => {
       const { pressed, hovered, focused } = state as Interaction;
       const base = variant === "primary" ? colors.accent
@@ -131,6 +133,19 @@ export function EmptyState({ colors, icon, title, detail }: { colors: Colors; ic
   </View>;
 }
 
+/**
+ * Hides a pane without unmounting it, so drafts and conflict state held in its
+ * components survive. Hidden panes are removed from assistive tech and touch.
+ */
+export function paneVisibility(visible: boolean) {
+  return {
+    display: visible ? "flex" as const : "none" as const,
+    accessibilityElementsHidden: !visible,
+    importantForAccessibility: visible ? "auto" as const : "no-hide-descendants" as const,
+    pointerEvents: visible ? "auto" as const : "none" as const,
+  };
+}
+
 export const row = { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm } as const;
 
 /** The host's input chrome, shared by every Docket text field. */
@@ -147,7 +162,8 @@ export function Chip({ colors, label, selected, onPress, role = "button" }: {
   colors: Colors; label: string; selected?: boolean; onPress(): void; role?: "button" | "tab" | "radio";
 }) {
   return <Pressable accessibilityRole={role} accessibilityState={role === "radio" ? { checked: !!selected } : { selected: !!selected }}
-    onPress={onPress} style={(state) => {
+    aria-checked={role === "radio" ? !!selected : undefined} aria-selected={role === "tab" ? !!selected : undefined}
+    aria-pressed={role === "button" ? !!selected : undefined} onPress={onPress} style={(state) => {
       const { hovered, focused } = state as Interaction;
       return {
         minHeight: 30, paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, justifyContent: "center",

@@ -32,7 +32,7 @@ function Disclosure({ label, children }: { label: string; children: ReactNode })
   const [open, setOpen] = useState(false);
   const { theme } = useBlocks();
   return <View style={stack}>
-    <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)}
+    <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} aria-expanded={open} onPress={() => setOpen(!open)}
       style={{ flexDirection: "row", alignItems: "center", gap: 4, alignSelf: "flex-start", minHeight: 28 }}>
       <Glyph name={open ? "ChevronDown" : "ChevronRight"} color={theme.colors.accent} size={14} />
       <Text style={{ ...type.meta, fontWeight: "600", color: theme.colors.accent }}>{label}</Text>
