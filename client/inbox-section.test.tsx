@@ -14,7 +14,7 @@ vi.mock("react-native", () => ({
 vi.mock("@getpaseo/plugin/client", () => ({
   useAgent: () => null, useWorkspace: () => null, useAgents: () => [], useWorkspaces: () => [],
 }));
-vi.mock("@getpaseo/plugin/client/ui", () => ({ WorkspaceRowBadge: undefined }));
+vi.mock("@getpaseo/plugin/client/ui", () => ({ WorkspaceRowBadge: undefined, Icon: undefined }));
 vi.mock("./use-docket", () => ({ useDocketInbox: vi.fn() }));
 
 it.each(["collapse", "filter"])("preserves unsaved and conflict state across section, tab and %s transitions", async (transition) => {
@@ -67,14 +67,14 @@ it.each(["collapse", "filter"])("preserves unsaved and conflict state across sec
       await act(() => button!.props.onPress());
     };
     const heading = () => renderer.root.findByProps({ accessibilityRole: "header" }).props.children;
-    expect(heading()).toBe("Not delivered");
+    expect(heading()).toBe("Delivery");
     expect(renderer.root.findAllByType("button")).toHaveLength(0);
-    await press("Answer in place");
+    await press("Answer");
     await act(() => renderer.root.findByType("button").props.onClick());
 
     update("a", 0);
     await act(() => renderer.update(<Screen {...({ theme } as PluginScreenProps)} />));
-    expect(heading()).toBe("Agent stopped");
+    expect(heading()).toBe("Waiting on you");
     expect(renderer.root.findByType("button").props.children).toEqual(["unsent answer", " · conflict"]);
 
     function expectPanes(activeIndex: number) {
@@ -112,16 +112,16 @@ it.each(["collapse", "filter"])("preserves unsaved and conflict state across sec
       expect(renderer.root.findByType("button").props.children).toEqual(["unsent answer", " · conflict"]);
     }
     if (transition === "collapse") {
-      await press("Hide details");
+      await press("Collapse");
       expectDraftHidden();
-      await press("Answer in place");
+      await press("Answer");
     } else {
       const filter = renderer.root.findByProps({ accessibilityLabel: "Filter by agent label" });
       await act(() => filter.props.onChangeText("does not match"));
       expect(renderer.root.findAllByProps({ accessibilityRole: "header" })).toHaveLength(0);
       expectDraftHidden();
       await act(() => filter.props.onChangeText(""));
-      expect(heading()).toBe("Agent stopped");
+      expect(heading()).toBe("Waiting on you");
     }
     expect(renderer.root.findByType("button").props.children).toEqual(["unsent answer", " · conflict"]);
 
@@ -135,7 +135,7 @@ it.each(["collapse", "filter"])("preserves unsaved and conflict state across sec
     update("b", 0);
     await act(() => renderer.update(<Screen {...({ theme } as PluginScreenProps)} />));
     expect(renderer.root.findAllByType("button")).toHaveLength(0);
-    await press("Answer in place");
+    await press("Answer");
     expect(renderer.root.findByType("button").props.children[0]).toBe("edit answer");
   } finally {
     await act(() => renderer?.unmount());

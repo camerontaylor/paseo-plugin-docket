@@ -40,7 +40,7 @@ it.each([true, false])("lets a user copy or discard a closed edit (refreshed rec
   let tree!: ReturnType<typeof create>;
   await act(() => { tree = create(createElement(Harness)); });
   const button = tree.root.findAllByType("Pressable" as never).find((node) =>
-    node.findAllByType("Text" as never).some((text) => text.children.join("") === "Comment"));
+    node.findAllByType("Text" as never).some((text) => text.children.join("") === "Comment on this item"));
   await act(() => button!.props.onPress());
   vi.useFakeTimers();
   try {

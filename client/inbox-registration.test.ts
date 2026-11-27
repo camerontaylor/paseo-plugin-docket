@@ -15,12 +15,12 @@ vi.mock("react", async (load) => ({
   useEffect: vi.fn(),
   useCallback: (callback: unknown) => callback,
 }));
-vi.mock("react-native", () => ({ View: "View", Text: "Text", TextInput: "TextInput", ScrollView: "ScrollView" }));
+vi.mock("react-native", () => ({ View: "View", Text: "Text", TextInput: "TextInput", ScrollView: "ScrollView", Pressable: "Pressable" }));
 vi.mock("@getpaseo/plugin/client", () => ({
   useAgent: () => null, useWorkspace: () => null, useAgents: () => [], useWorkspaces: () => [],
 }));
 vi.mock("./use-docket", () => ({ useDocketInbox: vi.fn() }));
-vi.mock("@getpaseo/plugin/client/ui", () => ({ WorkspaceRowBadge: undefined }));
+vi.mock("@getpaseo/plugin/client/ui", () => ({ WorkspaceRowBadge: undefined, Icon: undefined }));
 vi.mock("./agent-panel", () => ({ registerAgentPanel: vi.fn(() => vi.fn()) }));
 vi.mock("./surface-timeline", () => ({ registerSurfaceTimeline: vi.fn(() => vi.fn()) }));
 vi.mock("./source", () => ({ startSource: vi.fn(() => vi.fn()) }));

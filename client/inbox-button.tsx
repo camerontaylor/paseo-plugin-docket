@@ -1,22 +1,21 @@
-import { Pressable, Text } from "react-native";
 import type { PluginHostProps } from "@getpaseo/plugin/client";
+import { Button, type ButtonVariant } from "./kit";
 
 type Theme = PluginHostProps["theme"];
 
-export function InboxButton({ label, onPress, disabled, selected, theme, role = "button" }: {
+/** The inbox's tab and navigation buttons, drawn with Docket's shared button. */
+export function InboxButton({ label, onPress, disabled, selected, theme, role = "button", variant, icon }: {
   label: string;
   onPress(): void;
   disabled?: boolean;
   selected?: boolean;
   role?: "button" | "tab";
   theme: Theme;
+  variant?: ButtonVariant;
+  icon?: string;
 }) {
-  return <Pressable accessibilityRole={role} accessibilityState={{ disabled, selected }}
-    disabled={disabled} onPress={onPress}
-    style={{ padding: 8, borderRadius: 5, backgroundColor: selected ? theme.colors.accent : theme.colors.surface2,
-      opacity: disabled ? 0.55 : 1 }}>
-    <Text style={{ color: selected ? theme.colors.accentForeground : theme.colors.foreground }}>{label}</Text>
-  </Pressable>;
+  return <Button colors={theme.colors} label={label} onPress={onPress} disabled={disabled} selected={selected} role={role}
+    icon={icon} compact={role === "tab"} variant={variant ?? (role === "tab" ? (selected ? "primary" : "quiet") : "secondary")} />;
 }
 
-export const buttonRow = { flexDirection: "row", flexWrap: "wrap", gap: 6 } as const;
+export const buttonRow = { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 } as const;
