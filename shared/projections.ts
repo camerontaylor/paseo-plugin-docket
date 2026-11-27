@@ -34,6 +34,7 @@ export interface Summary {
     id: string;
     recommend?: Question["recommend"];
   })[];
+  /** Non-redacted deliveries, like pendingDeliveries. */
   deliveries?: { n: number; state: DeliveryState }[];
 }
 
@@ -61,7 +62,8 @@ export function summaryOf(record: SurfaceRecord): Summary {
       const recommend = record.document?.questions?.find((q) => q.id === id)?.recommend;
       return { id, kind, label, state, ...(recommend === undefined ? {} : { recommend }) };
     }),
-    deliveries: record.deliveries.map(({ n, state }) => ({ n, state })),
+    // Deliveries the user deleted (text redacted) are history, as in pendingDeliveries.
+    deliveries: record.deliveries.flatMap(({ n, state, text }) => text === "" ? [] : [{ n, state }]),
   };
 }
 

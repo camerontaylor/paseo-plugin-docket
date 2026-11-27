@@ -28,6 +28,9 @@ function SurfaceAnswers({ hostId, surfaceId, theme }: { hostId: string; surfaceI
       {record === null ? "This surface is no longer available." : "Loading questions…"}
     </Text>}
     {record && <View {...visibility} style={{ display, gap: space.md }}>
+      {/* Without its document the blocks cannot show the context, so show the retained copy. */}
+      {!record.document && !!record.context
+        && <Text selectable style={{ ...type.body, color: colors.foregroundMuted }}>{record.context}</Text>}
       <SurfaceQuestions key={JSON.stringify([hostId, surfaceId])} hostId={hostId} record={record} theme={theme} refresh={refresh} />
     </View>}
   </View>;
@@ -80,10 +83,13 @@ function AgentPanel({ host, params, theme }: PluginAgentPanelProps) {
       </Notice>}
       {entry?.fresh && !open.length && !resolved.length && <EmptyState colors={colors} icon="ClipboardCheck"
         title="No open questions" detail="Questions this agent asks with Docket appear here." />}
-      {!!open.length && <SectionLabel colors={colors} title="Open" count={open.length} />}
-      {open.map((surface, index) => <SurfaceRow key={surface.id} surface={surface} hostId={host.id} theme={theme} startOpen={index === 0} />)}
-      {!!resolved.length && <SectionLabel colors={colors} title="Recently resolved" count={resolved.length} />}
-      {resolved.map((surface) => <SurfaceRow key={surface.id} surface={surface} hostId={host.id} theme={theme} startOpen={false} />)}
+      {/* One keyed list, so a row keeps its controls (and their unsaved state) when it changes section. */}
+      {[
+        ...open.length ? [<SectionLabel key="label:open" colors={colors} title="Open" count={open.length} />] : [],
+        ...open.map((surface, index) => <SurfaceRow key={surface.id} surface={surface} hostId={host.id} theme={theme} startOpen={index === 0} />),
+        ...resolved.length ? [<SectionLabel key="label:resolved" colors={colors} title="Recently resolved" count={resolved.length} />] : [],
+        ...resolved.map((surface) => <SurfaceRow key={surface.id} surface={surface} hostId={host.id} theme={theme} startOpen={false} />),
+      ]}
     </ScrollView>
   );
 }

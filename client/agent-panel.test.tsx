@@ -82,3 +82,56 @@ it("keeps unsaved answer state across collapse and host unavailability", async (
     vi.unstubAllGlobals();
   }
 });
+
+it("keeps a row's controls when its surface moves from open to resolved", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const { entry } = await import("./hub") as unknown as { entry: { summaries: Map<string, Summary> } };
+  entry.summaries.clear();
+  entry.summaries.set("s_bbbbbb", { ...summary, id: "s_bbbbbb", status: "resolved", openQuestions: 0, resolvedAt: "2026-11-23T00:00:00Z" });
+  entry.summaries.set(summary.id, summary);
+  vi.mocked(useSurface).mockImplementation(() => ({ record: { id: summary.id } as SurfaceRecord, unavailable: false, refresh: vi.fn() }));
+  const addAgentPanel = vi.fn<PluginClientContext["addAgentPanel"]>(() => vi.fn());
+  registerAgentPanel({ addAgentPanel } as unknown as PluginClientContext);
+  const Panel = addAgentPanel.mock.calls[0][0].Component;
+  const props = { host: { id: "host" }, params: { agentId: "agent" }, theme: { colors: {} } } as unknown as PluginAgentPanelProps;
+  let tree!: ReturnType<typeof create>;
+  try {
+    await act(() => { tree = create(<Panel {...props} />); });
+    await act(() => tree.root.findByType("button").props.onClick());
+    entry.summaries.set(summary.id, { ...summary, status: "resolved", openQuestions: 0, resolvedAt: "2026-11-24T00:00:00Z" });
+    await act(() => tree.update(<Panel {...props} />));
+    expect(tree.root.findByType("button").props.children).toBe("unsent answer");
+  } finally {
+    await act(() => tree?.unmount());
+    entry.summaries.clear();
+    vi.unstubAllGlobals();
+  }
+});
+
+it("shows retained context when a compacted surface is expanded", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const { entry } = await import("./hub") as unknown as { entry: { summaries: Map<string, Summary> } };
+  entry.summaries.clear();
+  entry.summaries.set(summary.id, { ...summary, status: "resolved", openQuestions: 0, compacted: true, context: "Kept context" });
+  vi.mocked(useSurface).mockImplementation(() => ({
+    record: { id: summary.id, document: null, context: "Kept context" } as SurfaceRecord, unavailable: false, refresh: vi.fn(),
+  }));
+  const addAgentPanel = vi.fn<PluginClientContext["addAgentPanel"]>(() => vi.fn());
+  registerAgentPanel({ addAgentPanel } as unknown as PluginClientContext);
+  const Panel = addAgentPanel.mock.calls[0][0].Component;
+  const props = { host: { id: "host" }, params: { agentId: "agent" }, theme: { colors: {} } } as unknown as PluginAgentPanelProps;
+  let tree!: ReturnType<typeof create>;
+  try {
+    await act(() => { tree = create(<Panel {...props} />); });
+    const full = () => tree.root.findAll((node) => node.type === "Text" && node.props.children === "Kept context"
+      && node.props.numberOfLines === undefined);
+    expect(full()).toHaveLength(0);
+    await act(() => tree.root.findAll((node) => node.type === "Pressable"
+      && node.props.accessibilityLabel === "View answers: Question")[0].props.onPress());
+    expect(full()).toHaveLength(1);
+  } finally {
+    await act(() => tree?.unmount());
+    entry.summaries.clear();
+    vi.unstubAllGlobals();
+  }
+});

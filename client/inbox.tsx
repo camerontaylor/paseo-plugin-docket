@@ -6,8 +6,8 @@ import * as ui from "@getpaseo/plugin/client/ui";
 import type { PluginWorkspaceSnapshot } from "@getpaseo/plugin";
 import type { SurfaceRecord } from "../shared/record";
 import { InboxButton, buttonRow } from "./inbox-button";
-import { countLabel, entityKey, groupInbox, inboxSection, type inboxSections } from "./inbox-query";
-import { Button, Chip, EmptyState, Glyph, Notice, NoticeText, Pill, SectionLabel, inputStyle, paneVisibility, radius, row, space, toneColor, type, type Tone } from "./kit";
+import { cardStatus, countLabel, entityKey, groupInbox, inboxSection, type inboxSections } from "./inbox-query";
+import { Button, Chip, EmptyState, Glyph, Notice, NoticeText, Pill, SectionLabel, inputStyle, paneVisibility, radius, row, space, toneColor, type } from "./kit";
 import { useDocketInbox } from "./use-docket";
 
 const screenId = "inbox";
@@ -132,22 +132,6 @@ function ExpandedCard({ hostId, surfaceId, theme, controls, ready, fromHistory =
         hostId={hostId} theme={theme} record={record} refresh={refresh} />
     </View>}
   </View>;
-}
-
-type CardStatus = { label: string; tone: Tone; icon: string };
-
-/** The one status a card leads with: delivery trouble first, then whether the agent is blocked. */
-function cardStatus(summary: Inbox["cards"][number]["summary"]): CardStatus {
-  const states = summary.deliveries?.map(({ state }) => state) ?? [];
-  if (states.some((state) => state === "failed" || state === "held" || state === "removed")) {
-    return { label: "Not delivered", tone: "danger", icon: "AlertTriangle" };
-  }
-  if (states.includes("uncertain")) return { label: "Checking delivery", tone: "warning", icon: "Loader" };
-  if (summary.pendingDeliveries > 0) return { label: "Sending", tone: "accent", icon: "Send" };
-  const questions = summary.openQuestions === 1 ? "1 question" : `${summary.openQuestions} questions`;
-  return summary.meanwhile === "other_work"
-    ? { label: questions, tone: "accent", icon: "MessageCircleQuestion" }
-    : { label: `Agent waiting · ${questions}`, tone: "warning", icon: "Hourglass" };
 }
 
 function Card({ card, source, openChat, agentRef, workspaceRef, theme, now, controls, visible, opened, retain, showHost }: {

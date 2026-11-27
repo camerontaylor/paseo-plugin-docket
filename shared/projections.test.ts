@@ -54,8 +54,11 @@ describe("summaryOf", () => {
     r = run(r, { kind: "send", targets: [{ target: "queue", version: 1 }], now });
     r = run(r, { kind: "updateDelivery", n: 1, to: "removed", now });
     expect(summaryOf(r).pendingDeliveries).toBe(1);
+    expect(summaryOf(r).deliveries).toEqual([{ n: 1, state: "removed" }]);
     r = run(r, { kind: "deleteDecisions", questions: ["queue"], now });
     expect(summaryOf(r)).toMatchObject({ openQuestions: 1, pendingDeliveries: 0 });
+    // The deleted delivery is history: it must not read as an outstanding failure.
+    expect(summaryOf(r).deliveries).toEqual([]);
   });
 });
 
