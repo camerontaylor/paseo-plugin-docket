@@ -9,6 +9,7 @@ import { evidenceCheck, evidenceGet } from "../shared/rpc";
 import { BlockCode } from "./block-code";
 import { BlockMarkdown } from "./block-markdown";
 import { callHost, getHub } from "./hub";
+import { Glyph, Pill, radius, row, space, type, type Tone } from "./kit";
 
 interface BlockContext {
   hostId: string;
@@ -24,15 +25,17 @@ const stack = { gap: 8, minWidth: 0 };
 
 function Label({ children, muted = false }: { children: ReactNode; muted?: boolean }) {
   const c = useBlocks().theme.colors;
-  return <Text selectable style={{ color: muted ? c.foregroundMuted : c.foreground }}>{children}</Text>;
+  return <Text selectable style={muted ? { ...type.meta, color: c.foregroundMuted } : { ...type.body, color: c.foreground }}>{children}</Text>;
 }
 
 function Disclosure({ label, children }: { label: string; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const { theme } = useBlocks();
   return <View style={stack}>
-    <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)}>
-      <Text style={{ color: theme.colors.accent, paddingVertical: 6 }}>{open ? "▾ " : "▸ "}{label}</Text>
+    <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} aria-expanded={open} onPress={() => setOpen(!open)}
+      style={{ flexDirection: "row", alignItems: "center", gap: 4, alignSelf: "flex-start", minHeight: 28 }}>
+      <Glyph name={open ? "ChevronDown" : "ChevronRight"} color={theme.colors.accent} size={14} />
+      <Text style={{ ...type.meta, fontWeight: "600", color: theme.colors.accent }}>{label}</Text>
     </Pressable>
     {open && children}
   </View>;
@@ -47,7 +50,7 @@ function checkSnapshot(hostId: string, surfaceId: string, snapshotId: string) {
 function Evidence({ snapshotId, meta, children, unavailable }: {
   unavailable?: ReactNode; snapshotId: string; meta: Snapshot; children: (text: string, check?: Check) => ReactNode;
 }) {
-  const { hostId, record } = useBlocks();
+  const { hostId, record, theme } = useBlocks();
   const [text, setText] = useState<string | null>();
   const [check, setCheck] = useState<Check>();
   const [checking, setChecking] = useState(true);
@@ -76,10 +79,10 @@ function Evidence({ snapshotId, meta, children, unavailable }: {
     {check?.status === "unavailable" && <Label muted>Current source could not be checked</Label>}
     {text === undefined ? <Label muted>Loading snapshot…</Label>
       : text === null ? <><Label muted>Snapshot unavailable</Label>{unavailable}</> : children(text, check)}
-    {!checking && <Pressable accessibilityRole="button" onPress={() => {
+    {!checking && <Pressable accessibilityRole="button" style={{ alignSelf: "flex-start", minHeight: 28, justifyContent: "center" }} onPress={() => {
       setChecking(true);
       setAttempt(attempt + 1);
-    }}><Label muted>{text === null ? "Retry snapshot" : "Check current source"}</Label></Pressable>}
+    }}><Text style={{ ...type.meta, fontWeight: "600", color: theme.colors.accent }}>{text === null ? "Retry snapshot" : "Check current source"}</Text></Pressable>}
   </View>;
 }
 
@@ -109,12 +112,15 @@ export function SurfaceMarkdown({ text }: { text: string }) {
   return <BlockMarkdown text={text} theme={theme} excerpt={(ref) => <RefExcerpt key={ref} reference={ref} />} />;
 }
 
-function Item({ block, id, title, subline, children }: {
-  block: string; id: string; title: string; subline?: string; children?: ReactNode;
+function Item({ block, id, title, subline, status, children }: {
+  block: string; id: string; title: string; subline?: string; status?: [string, Tone]; children?: ReactNode;
 }) {
   const { theme, feedback } = useBlocks();
-  return <View style={[stack, { borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2, borderRadius: 8, padding: 10 }]}>
-    <Text selectable style={{ color: theme.colors.foreground, fontWeight: "600" }}>{title}</Text>
+  return <View style={[stack, { borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, borderRadius: radius.sm, padding: space.md }]}>
+    <View style={[row, { justifyContent: "space-between", flexWrap: "nowrap", alignItems: "flex-start" }]}>
+      <Text selectable style={{ ...type.body, flex: 1, minWidth: 0, color: theme.colors.foreground, fontWeight: "600" }}>{title}</Text>
+      {status && <Pill colors={theme.colors} tone={status[1]} label={status[0]} />}
+    </View>
     {!!subline && <Label muted>{subline}</Label>}
     {children}
     {feedback(block, id)}
@@ -123,8 +129,8 @@ function Item({ block, id, title, subline, children }: {
 
 function PlanItem({ block, step }: { block: string; step: PlanStep }) {
   const files = typeof step.files === "string" ? [step.files] : step.files ?? [];
-  const status = { todo: "To do", doing: "In progress", done: "Done", blocked: "Blocked" }[step.status ?? "todo"];
-  return <Item block={block} id={step.id} title={step.title} subline={status}>
+  const status = ({ todo: ["To do", "neutral"], doing: ["In progress", "accent"], done: ["Done", "success"], blocked: ["Blocked", "danger"] } as const)[step.status ?? "todo"];
+  return <Item block={block} id={step.id} title={step.title} status={[...status]}>
     {!!step.after?.length && <Label muted>{`Depends on ${step.after.join(", ")}`}</Label>}
     {!!step.detail && <Disclosure label="Details"><SurfaceMarkdown text={step.detail} /></Disclosure>}
     {[...new Set([...(step.ref ? [step.ref] : []), ...files])].map((reference) =>
@@ -181,7 +187,7 @@ function Blocks() {
       const id = blockId(block)!;
       const entry = Object.entries(record.snapshots).find(([, meta]) => meta.block === id);
       return <View key={id} style={stack}>
-        {!!block.title && <Text style={{ color: theme.colors.foreground, fontWeight: "600" }}>{block.title}</Text>}
+        {!!block.title && <Text accessibilityRole="header" style={{ ...type.title, color: theme.colors.foreground }}>{block.title}</Text>}
         {reviewPrompt(id)}
         {block.t === "plan" ? block.steps.map((step) => <PlanItem key={step.id} block={id} step={step} />)
           : block.t === "code" && block.s !== undefined ? <BlockCode text={block.s} lang={block.lang} diff={block.diff} theme={theme} />

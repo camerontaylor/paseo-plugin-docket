@@ -14,7 +14,7 @@ vi.mock("react-native", () => ({
 vi.mock("@getpaseo/plugin/client", () => ({
   useAgent: () => null, useWorkspace: () => null, useAgents: () => [], useWorkspaces: () => [],
 }));
-vi.mock("@getpaseo/plugin/client/ui", () => ({ WorkspaceRowBadge: undefined }));
+vi.mock("@getpaseo/plugin/client/ui", () => ({ WorkspaceRowBadge: undefined, Icon: undefined }));
 vi.mock("./use-docket", () => ({ useDocketInbox: vi.fn() }));
 
 it.each(["collapse", "filter"])("preserves unsaved and conflict state across section, tab and %s transitions", async (transition) => {
@@ -67,14 +67,14 @@ it.each(["collapse", "filter"])("preserves unsaved and conflict state across sec
       await act(() => button!.props.onPress());
     };
     const heading = () => renderer.root.findByProps({ accessibilityRole: "header" }).props.children;
-    expect(heading()).toBe("Not delivered");
+    expect(heading()).toBe("Delivery");
     expect(renderer.root.findAllByType("button")).toHaveLength(0);
-    await press("Answer in place");
+    await press("Answer");
     await act(() => renderer.root.findByType("button").props.onClick());
 
     update("a", 0);
     await act(() => renderer.update(<Screen {...({ theme } as PluginScreenProps)} />));
-    expect(heading()).toBe("Agent stopped");
+    expect(heading()).toBe("Waiting on you");
     expect(renderer.root.findByType("button").props.children).toEqual(["unsent answer", " · conflict"]);
 
     function expectPanes(activeIndex: number) {
@@ -112,16 +112,16 @@ it.each(["collapse", "filter"])("preserves unsaved and conflict state across sec
       expect(renderer.root.findByType("button").props.children).toEqual(["unsent answer", " · conflict"]);
     }
     if (transition === "collapse") {
-      await press("Hide details");
+      await press("Collapse");
       expectDraftHidden();
-      await press("Answer in place");
+      await press("Answer");
     } else {
       const filter = renderer.root.findByProps({ accessibilityLabel: "Filter by agent label" });
       await act(() => filter.props.onChangeText("does not match"));
       expect(renderer.root.findAllByProps({ accessibilityRole: "header" })).toHaveLength(0);
       expectDraftHidden();
       await act(() => filter.props.onChangeText(""));
-      expect(heading()).toBe("Agent stopped");
+      expect(heading()).toBe("Waiting on you");
     }
     expect(renderer.root.findByType("button").props.children).toEqual(["unsent answer", " · conflict"]);
 
@@ -135,7 +135,7 @@ it.each(["collapse", "filter"])("preserves unsaved and conflict state across sec
     update("b", 0);
     await act(() => renderer.update(<Screen {...({ theme } as PluginScreenProps)} />));
     expect(renderer.root.findAllByType("button")).toHaveLength(0);
-    await press("Answer in place");
+    await press("Answer");
     expect(renderer.root.findByType("button").props.children[0]).toBe("edit answer");
   } finally {
     await act(() => renderer?.unmount());
@@ -247,6 +247,46 @@ it.each(["Back/reopen", "different history target"])("retains history answers ac
     expect(button("a")).toBeUndefined();
     await click("open-a");
     expect(draft()[0]).toBe("edit answer");
+  } finally {
+    await act(() => renderer?.unmount());
+    vi.unstubAllGlobals();
+  }
+});
+
+it("shows retained context for a compacted card and offers workspace filters beside unassigned cards", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const theme = { colors: {} } as PluginScreenProps["theme"];
+  const base: Summary = {
+    id: "s_aaaaaa", rev: 1, agentId: "agent", workspaceId: null, summary: "Question",
+    status: "resolved", createdAt: "2026-11-22T00:00:00Z", resolvedAt: null, openQuestions: 0,
+    pendingDeliveries: 1, replacedBy: null, revises: null, compacted: true, context: "Kept context",
+  };
+  const host = { serverId: "a", label: "a", status: "online" as const, docketStatus: "ready" as const,
+    summaries: undefined, updatedAt: undefined };
+  vi.mocked(useDocketInbox).mockReturnValue({
+    sources: [host],
+    cards: [{ hostId: "a", summary: base }, { hostId: "a", summary: { ...base, id: "s_bbbbbb", workspaceId: "w" } }],
+    count: { kind: "exact", value: 2 },
+  });
+  const addScreen = vi.fn<PluginClientContext["addScreen"]>(() => vi.fn());
+  registerInbox({ addScreen, addSidebarHeaderItem: () => vi.fn() } as unknown as PluginClientContext, {
+    useSurface: () => ({ record: { summary: "Question", compactedAt: "2026-11-23T00:00:00Z", document: null,
+      context: "Kept context" } as SurfaceRecord, unavailable: false, refresh: vi.fn() }),
+    SurfaceQuestions: () => null,
+    Decisions: () => null,
+  });
+  const Screen = addScreen.mock.calls[0][0].Component;
+  let renderer!: ReturnType<typeof create>;
+  try {
+    await act(() => { renderer = create(<Screen {...({ theme } as PluginScreenProps)} />); });
+    const texts = (value: string) => renderer.root.findAll((node) => node.type === "Text" && node.props.children === value);
+    expect(texts("All workspaces")).toHaveLength(1);
+    const details = renderer.root.findAll((node) => node.type === "Pressable"
+      && node.props.accessibilityLabel === "Delivery details: Question")[0];
+    await act(() => details.props.onPress());
+    // The collapsed preview of the expanded card is gone; the retained copy is what remains visible.
+    expect(texts("Kept context")).toHaveLength(2);
+    expect(texts("Kept context").filter((node) => node.props.numberOfLines === undefined)).toHaveLength(1);
   } finally {
     await act(() => renderer?.unmount());
     vi.unstubAllGlobals();

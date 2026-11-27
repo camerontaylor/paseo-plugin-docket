@@ -1,4 +1,5 @@
 import type { PluginTimelineTransformerContribution } from "@getpaseo/plugin/client";
+import { isSurfaceId } from "../shared/ids";
 
 export const SURFACE_KIND = "surface";
 
@@ -24,6 +25,20 @@ function outputTexts(output: unknown): string[] {
   return [];
 }
 
+/**
+ * Claude stores the MCP structured result instead of its text, as
+ * `{ output: { surface, status, rendered, open } }`. Accept that shape, and the
+ * same object under `structuredContent`, when it names a valid surface id.
+ */
+function structuredAnchor(output: unknown, depth = 0): { surfaceId: string; fallback: string } | undefined {
+  if (!output || typeof output !== "object" || Array.isArray(output) || depth > 2) return;
+  const value = output as Record<string, unknown>;
+  if (typeof value.surface === "string" && isSurfaceId(value.surface) && typeof value.status === "string") {
+    return { surfaceId: value.surface, fallback: typeof value.rendered === "string" ? value.rendered.trim() : "" };
+  }
+  return structuredAnchor(value.structuredContent, depth + 1) ?? structuredAnchor(value.output, depth + 1);
+}
+
 export const surfaceTransformer: PluginTimelineTransformerContribution<"tool_call"> = {
   id: "surface",
   query: { itemType: "tool_call" },
@@ -36,6 +51,8 @@ export const surfaceTransformer: PluginTimelineTransformerContribution<"tool_cal
       const fallback = text.slice(marker[0].length).trim();
       return { items: [{ type: "plugin", kind: SURFACE_KIND, version: 1, data: { surfaceId, fallback } }] };
     }
+    const structured = structuredAnchor(item.detail.output);
+    if (structured) return { items: [{ type: "plugin", kind: SURFACE_KIND, version: 1, data: structured }] };
     // Leave the host's tool row visible when the result has no usable anchor.
   },
 };
